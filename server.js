@@ -39,6 +39,7 @@ const Order = require('./models/Order');
 
 // Middleware
 const { optionalAuth } = require('./middlewares/user-type-optional.middleware');
+const { requireCompletePhone } = require('./middlewares/require-complete-phone.middleware');
 const { resolveStorefrontMiddleware } = require('./middlewares/storefront.middleware');
 const { limiters } = require('./middlewares/rate-limiter.middleware');
 const { mongoSanitizeMiddleware } = require('./utils/mongoSanitize');
@@ -468,6 +469,8 @@ app.use(resolveStorefrontMiddleware);
 
 // Global optional auth (sets req.userType / req.userId when token present).
 app.use(optionalAuth);
+// Google/incomplete ecomm users cannot hit cart/checkout/orders until phone is saved.
+app.use(requireCompletePhone);
 
 function buildRequestId() {
   if (typeof crypto.randomUUID === 'function') {
@@ -518,6 +521,7 @@ app.use('/api/coupons', limiters.couponWrite);
 
 app.use('/api/auth/login', limiters.sensitive);
 app.use('/api/auth/register', limiters.sensitive);
+app.use('/api/auth/google', limiters.sensitive);
 // Legacy registration-OTP endpoint limiter kept commented for rollback reference.
 // app.use('/api/auth/otp-verify-login', limiters.sensitive);
 app.use('/api/auth/forgot-password', limiters.sensitive);

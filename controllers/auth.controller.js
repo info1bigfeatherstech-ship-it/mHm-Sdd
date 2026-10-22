@@ -11,6 +11,13 @@ const { normalizeAllowedStorefronts } = require('../middlewares/admin-storefront
 const { getRefreshCookieOptions } = require('../utils/refreshCookieOptions');
 const refreshTokenSession = require('../services/refreshTokenSession.service');
 const { setOrUnsetUniqueString } = require('../utils/optionalUniqueContact');
+const { hasUsableCustomerPhone } = require('../utils/indianMobile');
+const { buildPublicAuthUser } = require('../utils/authUserPayload');
+const { getGoogleAudiences, toVerifyAudience } = require('../utils/googleAuthAudience');
+const {
+  extractRequestedPhone,
+  assignFirstTimeCustomerPhone
+} = require('../services/completeCustomerPhone.service');
 const {
   ACCOUNT_SCOPES,
   PRIVILEGED_OPERATIONAL_ROLES,
@@ -19,7 +26,9 @@ const {
   buildCustomerLookup,
   buildCustomerContactLookup,
   buildStaffContactLookup,
-  customerScopeFromStorefront
+  customerScopeFromStorefront,
+  andFilters,
+  customerScopeFilter
 } = require('../utils/accountScope');
 
 // Import from OTP service
@@ -535,23 +544,23 @@ const googleClient = new OAuth2Client(
 
 const isVerifiedUserRecord = (user) => Boolean(user && (user.isPhoneVerified || user.isEmailVerified));
 
-const buildRegisterLoginPayload = (user, accessToken) => ({
-  success: true,
-  message: "Registration successful",
-  accessToken,
-  user: {
-    id: user._id,
-    name: user.name,
-    email: user.email,
-    phone: user.phone,
-    userType: user.userType,
-    role: user.role,
-    status: user.status,
-    isPhoneVerified: user.isPhoneVerified,
-    isEmailVerified: user.isEmailVerified,
-    isProfileComplete: user.isProfileComplete
-  }
-});
+const buildRegisterLoginPayload = (user, accessToken) => {
+  const publicUser = buildPublicAuthUser(user);
+  return {
+    success: true,
+    message: "Registration successful",
+    accessToken,
+    needsPhone: publicUser.needsPhone,
+    user: publicUser
+  };
+};
+
+const isInvalidGoogleIdTokenError = (error) => {
+  const name = String(error?.name || '');
+  const message = String(error?.message || '');
+  if (name === 'TokenExpiredError' || name === 'JsonWebTokenError') return true;
+  return /token used too (early|late)|expired|wrong recipient|invalid token|no pem found|audience/i.test(message);
+};
 
 // ========== 1️ REGISTER CONTROLLER ==========
 
@@ -1439,20 +1448,11 @@ const me = async (req, res) => {
       );
     }
 
+    const publicUser = buildPublicAuthUser(user);
     return res.status(200).json({
       success: true,
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        phone: user.phone,
-        userType: user.userType,
-         role: user.role || user.userType,  // ✅ ADD THIS
-        status: user.status,
-        isPhoneVerified: user.isPhoneVerified,
-         isEmailVerified: user.isEmailVerified,  // ✅ Add this too
-        isProfileComplete: user.isProfileComplete  // ✅ Add this too
-      }
+      needsPhone: publicUser.needsPhone,
+      user: publicUser
     });
   } catch (error) {
     console.error('Me error:', error);
@@ -1464,12 +1464,12 @@ const me = async (req, res) => {
 
 const updateProfile = async (req, res) => {
   try {
-    const updates = {};
     const hasEmailChange = Object.prototype.hasOwnProperty.call(req.body || {}, 'email');
-    const hasPhoneChange = Object.prototype.hasOwnProperty.call(req.body || {}, 'phone');
+    const phoneRequest = extractRequestedPhone(req.body);
 
-    // Identity fields require explicit OTP/verification flow; do not mutate directly here.
-    if (hasEmailChange || hasPhoneChange) {
+    // Email (and later phone changes) stay on the dedicated verification flow.
+    // First-time phone for Google/incomplete ecomm users is allowed below.
+    if (hasEmailChange) {
       return res.status(409).json({
         success: false,
         code: 'PROFILE_CONTACT_CHANGE_REQUIRES_VERIFICATION',
@@ -1477,28 +1477,50 @@ const updateProfile = async (req, res) => {
       });
     }
 
-    if (typeof req.body?.name === 'string' && req.body.name.trim()) {
-      updates.name = req.body.name.trim();
-    }
-
-    if (!Object.keys(updates).length) {
-      return respondAuthError(res, 400, 'PROFILE_FIELDS_MISSING', 'No updatable profile fields provided');
-    }
-
-    const user = await User.findByIdAndUpdate(req.userId, { $set: updates }, { new: true });
+    const user = await User.findById(req.userId);
     if (!user) {
       return respondAuthError(res, 404, 'USER_NOT_FOUND', 'User not found');
     }
 
+    if (phoneRequest.provided) {
+      const result = await assignFirstTimeCustomerPhone(user, phoneRequest.raw);
+      if (!result.ok) {
+        return respondAuthError(res, result.status, result.code, result.message);
+      }
+    }
+
+    if (typeof req.body?.name === 'string' && req.body.name.trim()) {
+      user.name = req.body.name.trim();
+    }
+
+    if (!user.isModified()) {
+      if (phoneRequest.provided) {
+        const publicUser = buildPublicAuthUser(user);
+        return res.status(200).json({
+          success: true,
+          message: 'Phone number saved',
+          needsPhone: publicUser.needsPhone,
+          user: publicUser
+        });
+      }
+      return respondAuthError(res, 400, 'PROFILE_FIELDS_MISSING', 'No updatable profile fields provided');
+    }
+
+    try {
+      await user.save();
+    } catch (saveErr) {
+      if (handleDuplicateContactError(res, saveErr, 'This contact is already registered on this storefront.')) {
+        return;
+      }
+      throw saveErr;
+    }
+
+    const publicUser = buildPublicAuthUser(user);
     return res.status(200).json({
       success: true,
-      message: 'Profile updated',
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone
-      }
+      message: phoneRequest.provided ? 'Phone number saved' : 'Profile updated',
+      needsPhone: publicUser.needsPhone,
+      user: publicUser
     });
   } catch (error) {
     if (error?.code === 11000) {
@@ -1582,19 +1604,35 @@ const googleAuth = async (req, res) => {
       return respondAuthError(res, 400, 'GOOGLE_ID_TOKEN_REQUIRED', 'Valid idToken is required');
     }
 
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
+    const audience = toVerifyAudience(getGoogleAudiences());
+    if (!audience) {
+      return respondAuthError(res, 500, 'GOOGLE_CLIENT_NOT_CONFIGURED', 'Google authentication is not configured');
+    }
+
+    let ticket;
+    try {
+      ticket = await googleClient.verifyIdToken({
+        idToken,
+        audience
+      });
+    } catch (verifyErr) {
+      console.warn('[Google Auth] idToken verification failed', verifyErr?.message);
+      return respondAuthError(res, 401, 'GOOGLE_ID_TOKEN_INVALID', 'Google authentication failed. Please try again.');
+    }
 
     const payload = ticket.getPayload();
 
-    if (!payload.email || !payload.email_verified) {
+    if (!payload?.email || !payload.email_verified) {
       return respondAuthError(res, 400, 'GOOGLE_EMAIL_NOT_VERIFIED', 'Google email not verified');
     }
 
-    const { sub: googleId, email, name = "" } = payload;
+    const { sub: googleId, email, name = '' } = payload;
     const normalizedEmail = String(email || '').trim().toLowerCase();
+    const googleName = String(name || '').trim();
+
+    if (!googleId) {
+      return respondAuthError(res, 400, 'GOOGLE_ID_TOKEN_INVALID', 'Google authentication failed. Please try again.');
+    }
 
     const reserved = await User.findOne(buildStaffContactLookup({ email: normalizedEmail })).select('_id');
     if (reserved) {
@@ -1607,8 +1645,13 @@ const googleAuth = async (req, res) => {
     }
 
     let user = await User.findOne(
-      buildCustomerContactLookup({ email: normalizedEmail }, ACCOUNT_SCOPES.ECOMM)
+      andFilters({ googleId }, customerScopeFilter(ACCOUNT_SCOPES.ECOMM))
     );
+    if (!user) {
+      user = await User.findOne(
+        buildCustomerContactLookup({ email: normalizedEmail }, ACCOUNT_SCOPES.ECOMM)
+      );
+    }
 
     if (user) {
       if (isWholesalerAccount(user) || isPrivilegedAccount(user)) {
@@ -1619,61 +1662,72 @@ const googleAuth = async (req, res) => {
           'This account is not allowed to login from the ecomm user portal.'
         );
       }
+      if (user.googleId && user.googleId !== googleId) {
+        return respondAuthError(
+          res,
+          409,
+          'GOOGLE_ACCOUNT_MISMATCH',
+          'This email is already linked to a different Google account.'
+        );
+      }
       if (!user.googleId) user.googleId = googleId;
+      if (!String(user.name || '').trim() && googleName) user.name = googleName;
       user.isEmailVerified = true;
-      user.status = "active";
+      user.status = 'active';
       user.accountScope = ACCOUNT_SCOPES.ECOMM;
+      user.lastLoginMethod = 'google';
+      user.isProfileComplete = hasUsableCustomerPhone(user.phone);
     } else {
       user = new User({
         googleId,
         email: normalizedEmail,
-        name,
+        name: googleName,
         isEmailVerified: true,
-        status: "active",
-        userType: "user",
-        role: "user",
+        isPhoneVerified: false,
+        status: 'active',
+        userType: 'user',
+        role: 'user',
         accountScope: ACCOUNT_SCOPES.ECOMM,
-        registrationMethod: "google"
+        registrationMethod: 'google',
+        lastLoginMethod: 'google',
+        isProfileComplete: false
       });
     }
 
-  const accessToken = generateAccessToken(user._id, user.userType, user.role, 'ecomm');
-  const refreshToken = generateRefreshToken(user._id);
-  const hashedRefreshToken = hashToken(refreshToken);
+    const accessToken = generateAccessToken(user._id, user.userType, user.role, 'ecomm');
+    const refreshToken = generateRefreshToken(user._id);
+    const hashedRefreshToken = hashToken(refreshToken);
+    const deviceInfo = req.headers['user-agent'] || req.body.deviceInfo || 'Google-Login';
 
-  const deviceInfo = req.headers['user-agent'] || req.body.deviceInfo || 'Google-Login';
-
-  try {
-    await user.save();
-  } catch (saveErr) {
-    if (handleDuplicateContactError(res, saveErr, 'This Google email is already registered on e-commerce.')) {
-      return;
-    }
-    throw saveErr;
-  }
-
-await refreshTokenSession.appendSession(user._id, {
-  hashedToken: hashedRefreshToken,
-  deviceInfo
-});
-
-setRefreshTokenCookie(req, res, 'ecomm', refreshToken);
-
-
-    return res.status(200).json({
-      success: true,
-      message: "Google login successful",
-      accessToken,
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        userType: user.userType
+    try {
+      await user.save();
+    } catch (saveErr) {
+      if (handleDuplicateContactError(res, saveErr, 'This Google email is already registered on e-commerce.')) {
+        return;
       }
+      throw saveErr;
+    }
+
+    await refreshTokenSession.appendSession(user._id, {
+      hashedToken: hashedRefreshToken,
+      deviceInfo
     });
 
+    setRefreshTokenCookie(req, res, 'ecomm', refreshToken);
+
+    const publicUser = buildPublicAuthUser(user);
+    return res.status(200).json({
+      success: true,
+      message: publicUser.needsPhone ? 'Google login successful. Mobile number required.' : 'Google login successful',
+      accessToken,
+      needsPhone: publicUser.needsPhone,
+      user: publicUser
+    });
   } catch (error) {
-    console.error("[Google Auth Error]", error);
+    if (isInvalidGoogleIdTokenError(error)) {
+      return respondAuthError(res, 401, 'GOOGLE_ID_TOKEN_INVALID', 'Google authentication failed. Please try again.');
+    }
+    console.error('[Google Auth Error]', error);
     return respondAuthError(res, 500, 'GOOGLE_AUTH_FAILED', 'Google authentication failed');
   }
 };

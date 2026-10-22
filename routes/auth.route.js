@@ -214,7 +214,7 @@ router.post('/logout', verifyToken, logout);   //done
 // =============================================
 
 router.get('/me', verifyToken, me);     //done
-router.put('/profile', verifyToken, updateProfile);   //done
+router.put('/profile', verifyToken, updateProfile);   // first-time phone allowed for Google users
 router.post(
     '/profile/contact-change/request-otp',
     verifyToken,
