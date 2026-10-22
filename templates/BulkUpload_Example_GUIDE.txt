@@ -1,0 +1,46 @@
+BULK LISTING — EXAMPLE GUIDE (Flipkart-style variants)
+======================================================
+File: BulkUpload_Example.csv  (open in Excel / Google Sheets)
+Official download: Admin → Products → Bulk Upload → download template
+
+Did the format change?
+----------------------
+Column names are the SAME as before (33 columns).
+What changed / clarified:
+  - variantAttributes  = per-SKU options  →  Color:Red | Size:M
+  - productAttributes  = shared product specs →  Material:Cotton | Warranty:1 Year
+  - Invalid Key:Value format now FAILS the row (no silent drop)
+  - Multi-variant productCode must be BASE-1, BASE-2, BASE-3… continuous
+
+Example file contains
+---------------------
+1) TSHIRT100-1 … TSHIRT100-4
+   One product, 4 variants (Color × Size).
+   name / title / description / category / productAttributes SAME on every row.
+   Only productCode + variantAttributes + price/qty may differ per row.
+
+2) SPEAKER50
+   Single-variant sample (no Color/Size).
+   variantAttributes left blank.
+   productCode can be bare BASE (SPEAKER50) for single SKU.
+
+Rules cheat-sheet
+-----------------
+productCode     Multi: BASE-1, BASE-2, …  |  Single: BASE or BASE-1
+variantAttributes   Key:Value | Key:Value   (unique combo per row of same product)
+productAttributes   Key:Value | Key:Value   (same on all rows of that product)
+salePrice           Must be LESS than basePrice when set
+images column       Leave BLANK for ZIP upload (folders named by productCode)
+wholesale           Example sets false (you can enable later if needed)
+category            Must already exist in admin (exact name)
+
+ZIP images (optional)
+---------------------
+TSHIRT100-1/   ← folder name = productCode
+  1.jpg
+  2.jpg
+TSHIRT100-2/
+  1.jpg
+…
+
+Fill your live category names before import (replace Apparel / Smart Life Gadgets if needed).
