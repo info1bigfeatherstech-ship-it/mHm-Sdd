@@ -6,6 +6,9 @@ const { uploadCategoryImages } = require('../middlewares/upload.middleware');
 const categoryController = require('../controllers/category.controller');
 
 // Public category endpoints
+// Mounted at /api/categories, so both /api/categories and /api/categories/categories
+// must list categories (storefront + Vite proxy use either path).
+router.get('/', categoryController.getAllCategories);
 router.get('/categories', categoryController.getAllCategories);
 router.get('/admin/categories',  categoryController.getAdminAllCategories);
 router.get('/categories/:id', categoryController.getCategoryById);

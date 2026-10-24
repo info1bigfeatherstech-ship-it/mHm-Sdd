@@ -359,7 +359,10 @@ async function computeCheckoutTotals({
       codFeeInr:
         baseOverride.codFeeInr != null && Number.isFinite(Number(baseOverride.codFeeInr))
           ? roundMoney2(Number(baseOverride.codFeeInr))
-          : null
+          : null,
+      shippingSpeed: baseOverride.shippingSpeed || null,
+      checkoutShippingMethod: baseOverride.checkoutShippingMethod || null,
+      etaLabel: baseOverride.etaLabel || null
     };
   } else {
     const ship = await checkDeliveryAvailabilityForActiveProvider(postalCode, {

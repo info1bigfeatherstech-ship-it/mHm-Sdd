@@ -10,9 +10,25 @@ exports.getUserCheckoutSettings = async (req, res) => {
   try {
     const storefront = checkoutSettingsService.normalizeStorefront(req.storefront);
     const policy = await checkoutSettingsService.getPolicyForStorefront(storefront);
+    let standardDeliveryEnabled = true;
+    try {
+      const shippingProviderSettingsService = require('../services/shippingProviderSettings.service');
+      standardDeliveryEnabled = await shippingProviderSettingsService.isStandardDeliveryEnabledForStorefront(
+        storefront
+      );
+    } catch (flagErr) {
+      logger.warn('standardDelivery flag for checkout settings failed — defaulting ON', {
+        storefront,
+        message: flagErr?.message || String(flagErr)
+      });
+      standardDeliveryEnabled = true;
+    }
     return res.json({
       success: true,
-      data: policy
+      data: {
+        ...policy,
+        standardDeliveryEnabled
+      }
     });
   } catch (err) {
     logger.error('getUserCheckoutSettings failed', buildRequestLogContext(req, {

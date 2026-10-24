@@ -121,10 +121,11 @@ const addressSchema = new mongoose.Schema({
     trim: true
   },
 
-  //  Future (DO NOT USE NOW, but keep)
   location: {
-    lat: { type: Number },
-    lng: { type: Number }
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+    geocodeKey: { type: String, default: null, trim: true },
+    geocodedAt: { type: Date, default: null }
   },
 
   isDefault: {

@@ -16,6 +16,11 @@ const {
     resolveOrderShippingProvider,
     isShipmozoOrder
 } = require('../constants/shippingProviders');
+const {
+    SHIPPING_SPEEDS,
+    normalizeShippingSpeed,
+    DEFAULT_CHECKOUT_SHIPPING_METHOD
+} = require('../services/sameDayDelivery.service');
 const logger = require('../utils/logger');
 const { cloudinary } = require('../config/cloudinary.config');
 const {
@@ -1325,6 +1330,8 @@ exports.createOrder = async (req, res) => {
                     Number.isFinite(Number(quote.shippingMeta.courierCompanyId))
                         ? Number(quote.shippingMeta.courierCompanyId)
                         : null,
+                shipmozoCourierId: quote.shippingMeta?.shipmozoCourierId || null,
+                shippingProvider: quote.shippingMeta?.shippingProvider || null,
                 isDeliverable: true,
                 codAvailable: quote.shippingMeta?.codAvailable !== false,
                 freightInr:
@@ -1336,7 +1343,10 @@ exports.createOrder = async (req, res) => {
                     quote.shippingMeta?.codFeeInr != null &&
                     Number.isFinite(Number(quote.shippingMeta.codFeeInr))
                         ? roundMoney2(Number(quote.shippingMeta.codFeeInr))
-                        : null
+                        : null,
+                shippingSpeed: quote.shippingSpeed || quote.shippingMeta?.shippingSpeed || null,
+                checkoutShippingMethod: quote.shippingMeta?.checkoutShippingMethod || null,
+                etaLabel: quote.shippingMeta?.etaLabel || null
             }
         };
 
@@ -1427,6 +1437,12 @@ exports.createOrder = async (req, res) => {
             } catch (_) {
                 orderShippingProvider = SHIPPING_PROVIDERS.SHIPROCKET;
             }
+        }
+        const shippingSpeed = normalizeShippingSpeed(
+            quote.shippingSpeed || pricedShip.shippingSpeed || quoteShip.shippingSpeed
+        );
+        if (shippingSpeed === SHIPPING_SPEEDS.SAME_DAY) {
+            orderShippingProvider = SHIPPING_PROVIDERS.SHIPROCKET;
         }
         const quoteTotalsMismatch =
             roundMoney2(quote.itemsSubtotal) !== roundMoney2(subtotal) ||
@@ -1532,6 +1548,7 @@ exports.createOrder = async (req, res) => {
             userType: finalUserType,
             storefront,
             shippingProvider: orderShippingProvider,
+            shippingSpeed,
             inventoryHold,
             orderStatus:
                 isLegacyAutoFulfillOnCheckout() && normalizedPaymentMethod === 'cod' ? 'confirmed' : 'pending',
@@ -1557,14 +1574,37 @@ exports.createOrder = async (req, res) => {
                 courierName: pricedShip.courierName || quoteShip.courierName || null,
                 estimatedDays: pricedShip.estimatedDays ?? quoteShip.estimatedDays ?? null,
                 courierCompanyId: resolvedCourierCompanyId,
-                shipmozoCourierId: resolvedShipmozoCourierId,
+                shipmozoCourierId: shippingSpeed === SHIPPING_SPEEDS.SAME_DAY ? null : resolvedShipmozoCourierId,
                 provider: orderShippingProvider,
                 pickupsAutomaticallyScheduled:
                     pricedShip.pickupsAutomaticallyScheduled != null
                         ? Boolean(pricedShip.pickupsAutomaticallyScheduled)
                         : quoteShip.pickupsAutomaticallyScheduled != null
                           ? Boolean(quoteShip.pickupsAutomaticallyScheduled)
-                          : null
+                          : null,
+                shippingSpeed,
+                checkoutShippingMethod:
+                    shippingSpeed === SHIPPING_SPEEDS.SAME_DAY
+                        ? String(
+                            pricedShip.checkoutShippingMethod ||
+                              quoteShip.checkoutShippingMethod ||
+                              DEFAULT_CHECKOUT_SHIPPING_METHOD
+                          ).trim() || DEFAULT_CHECKOUT_SHIPPING_METHOD
+                        : null,
+                etaLabel: pricedShip.etaLabel || quoteShip.etaLabel || null,
+                freightInr:
+                    pricedShip.freightInr != null && Number.isFinite(Number(pricedShip.freightInr))
+                      ? roundMoney2(Number(pricedShip.freightInr))
+                      : quoteShip.freightInr != null && Number.isFinite(Number(quoteShip.freightInr))
+                        ? roundMoney2(Number(quoteShip.freightInr))
+                        : null,
+                customerShippingInr:
+                    shippingSpeed === SHIPPING_SPEEDS.SAME_DAY
+                      ? roundMoney2(deliveryCharges)
+                      : pricedShip.customerShippingInr != null &&
+                          Number.isFinite(Number(pricedShip.customerShippingInr))
+                        ? roundMoney2(Number(pricedShip.customerShippingInr))
+                        : null
             },
             shippingWeightSnapshot
         };

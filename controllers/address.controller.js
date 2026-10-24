@@ -8,6 +8,15 @@ const {
   mergeCustomerStorefrontFilter,
   normalizeCustomerStorefront
 } = require("../utils/customerStorefrontScope");
+const { persistLocationIfFound } = require("../services/addressGeocode.service");
+
+async function softGeocodeSameDayAddress(addressDoc, storefront) {
+  try {
+    return await persistLocationIfFound(addressDoc, storefront);
+  } catch (_) {
+    return addressDoc;
+  }
+}
 
 const clean = (val) => (typeof val === "string" ? val.trim() : val);
 
@@ -123,6 +132,7 @@ const addAddress = async (req, res) => {
     });
 
     await address.save();
+    await softGeocodeSameDayAddress(address, storefront);
 
     return res.status(201).json({
       success: true,
@@ -317,6 +327,7 @@ const updateAddress = async (req, res) => {
     }
 
     await address.save();
+    await softGeocodeSameDayAddress(address, storefront);
 
     return res.status(200).json({
       success: true,

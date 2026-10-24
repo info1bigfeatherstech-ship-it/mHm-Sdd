@@ -35,6 +35,28 @@ const shippingProviderSettingsSchema = new mongoose.Schema(
       pickupPincode: { type: String, default: null, trim: true },
       warehouseAddressTitle: { type: String, default: null, trim: true }
     },
+    /**
+     * Standard courier checkout (Shiprocket / Shipmozo active provider).
+     * Default ON so existing stores keep current behaviour. When OFF, checkout
+     * may only confirm Same Day — no silent fallback to a standard courier.
+     */
+    standardDelivery: {
+      enabled: { type: Boolean, default: true }
+    },
+    /**
+     * Same Day (Shiprocket Quick) — checkout option. Default OFF.
+     * Becomes the only checkout option when standardDelivery.enabled is false.
+     */
+    sameDay: {
+      enabled: { type: Boolean, default: false },
+      pincodes: { type: [String], default: [] },
+      openHour: { type: Number, default: 9, min: 0, max: 23 },
+      cutoffHour: { type: Number, default: 14, min: 0, max: 23 },
+      floorFeeInr: { type: Number, default: 0, min: 0, max: 9999 },
+      feeBuffer: { type: Number, default: 1.2, min: 1, max: 2 },
+      warehouseLat: { type: Number, default: null },
+      warehouseLng: { type: Number, default: null }
+    },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
   },
   { timestamps: true }

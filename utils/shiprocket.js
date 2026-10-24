@@ -341,7 +341,8 @@ class ShiprocketService {
       }
 
       const { filterActiveCouriers, pickCheapestActiveCourier } = require('../services/courierPolicy.service');
-      const activeList = filterActiveCouriers(list);
+      const { excludeSameDayProductCouriers } = require('../services/sameDayDelivery.service');
+      const activeList = excludeSameDayProductCouriers(filterActiveCouriers(list));
       if (!activeList.length) {
         return {
           isDeliverable: false,
@@ -393,6 +394,131 @@ class ShiprocketService {
     } catch (err) {
       logger.error('[Shiprocket] serviceability failed:', err.response?.data || err.message);
       return this.mockQuote(pincode, weight);
+    }
+  }
+
+  static formatSameDayEtaLabel(courier) {
+    const hours = Number(courier?.etd_hours);
+    if (Number.isFinite(hours) && hours > 0 && hours <= 12) {
+      return `Within ${Math.ceil(hours)} hours`;
+    }
+    const days = Number(courier?.estimated_delivery_days ?? courier?.etd);
+    if (Number.isFinite(days) && days <= 1) {
+      return days <= 0 ? 'Same day' : 'By tomorrow';
+    }
+    const etdText = String(courier?.etd || courier?.estimated_delivery_days || '').trim();
+    if (etdText) return etdText;
+    return 'Same day';
+  }
+
+  /**
+   * Same Day / Quick subset only. Never falls back to cheapest surface courier.
+   */
+  async checkSameDayServiceability(deliveryPincode, opts = {}) {
+    const {
+      SAME_DAY_REASONS,
+      DEFAULT_CHECKOUT_SHIPPING_METHOD,
+      filterToSameDayProbeCouriers,
+      buildHyperlocalServiceabilityParams
+    } = require('../services/sameDayDelivery.service');
+    const { filterActiveCouriers, pickCheapestActiveCourier } = require('../services/courierPolicy.service');
+
+    const pincode = String(deliveryPincode || '').replace(/\D/g, '').slice(0, 6);
+    const weight = Math.max(0.05, Number(opts.weightKg) || 0.5);
+    const length = Math.max(1, Number(opts.lengthCm) || 1);
+    const breadth = Math.max(1, Number(opts.widthCm) || 1);
+    const height = Math.max(1, Number(opts.heightCm) || 1);
+    const codAmount = Math.max(0, Number(opts.codAmount) || 0);
+    const checkoutShippingMethod =
+      String(opts.checkoutShippingMethod || process.env.SAME_DAY_CHECKOUT_SHIPPING_METHOD || DEFAULT_CHECKOUT_SHIPPING_METHOD).trim() ||
+      DEFAULT_CHECKOUT_SHIPPING_METHOD;
+
+    const hyperlocalParams = buildHyperlocalServiceabilityParams({
+      warehouseLat: opts.warehouseLat,
+      warehouseLng: opts.warehouseLng,
+      deliveryLat: opts.deliveryLat,
+      deliveryLng: opts.deliveryLng
+    });
+
+    if (pincode.length !== 6) {
+      return { available: false, reason: SAME_DAY_REASONS.NOT_SERVICEABLE, mock: false };
+    }
+
+    const pickup = String(process.env.STORE_PINCODE || process.env.PICKUP_PINCODE || '')
+      .replace(/\D/g, '')
+      .slice(0, 6);
+    if (pickup.length !== 6) {
+      return { available: false, reason: SAME_DAY_REASONS.PICKUP_PIN_MISSING, mock: false };
+    }
+
+    if (!this.enabled) {
+      return { available: false, reason: SAME_DAY_REASONS.PROBE_ERROR, mock: false };
+    }
+
+    try {
+      const params = {
+        pickup_postcode: pickup,
+        delivery_postcode: pincode,
+        weight,
+        cod: codAmount > 0 ? 1 : 0,
+        cod_amount: codAmount > 0 ? codAmount : undefined,
+        length,
+        breadth,
+        height
+      };
+      if (hyperlocalParams) {
+        Object.assign(params, hyperlocalParams);
+      }
+
+      const data = await this.requestWithAuth({
+        method: 'get',
+        url: `${this.baseURL}/external/courier/serviceability`,
+        params,
+        timeout: 20000
+      });
+      if (!data) {
+        return { available: false, reason: SAME_DAY_REASONS.PROBE_ERROR, mock: false };
+      }
+
+      const list = data?.data?.available_courier_companies || data?.data?.available_courier_list || [];
+      if (!Array.isArray(list) || list.length === 0) {
+        return { available: false, reason: SAME_DAY_REASONS.NOT_SERVICEABLE, mock: false };
+      }
+
+      const quickList = filterToSameDayProbeCouriers(filterActiveCouriers(list));
+      if (!quickList.length) {
+        return { available: false, reason: SAME_DAY_REASONS.NO_QUICK_COURIER, mock: false };
+      }
+
+      const picked = pickCheapestActiveCourier(quickList, { codRequired: codAmount > 0 });
+      if (!picked) {
+        return { available: false, reason: SAME_DAY_REASONS.NO_QUICK_COURIER, mock: false };
+      }
+
+      const best = picked.courier;
+      const split = ShiprocketService.extractShippingChargeSplit(best, Number(best.rate ?? best.freight_charge) || 0);
+
+      return {
+        available: true,
+        deliveryCharges: Math.max(0, split.deliveryCharges),
+        freightInr: Math.max(0, split.freightInr),
+        codFeeInr: Math.max(0, split.codFeeInr),
+        etaLabel: ShiprocketService.formatSameDayEtaLabel(best),
+        courierName: picked.courierName,
+        courierCompanyId: picked.courierCompanyId,
+        checkoutShippingMethod,
+        codAvailable:
+          best.cod === 1 ||
+          best.cod === true ||
+          best.is_cod_available === 1 ||
+          best.is_cod_available === true,
+        mock: false
+      };
+    } catch (err) {
+      logger.warn('[Shiprocket] same-day serviceability failed (soft)', {
+        message: err.response?.data || err.message
+      });
+      return { available: false, reason: SAME_DAY_REASONS.PROBE_ERROR, mock: false };
     }
   }
 
@@ -757,6 +883,18 @@ class ShiprocketService {
     };
 
     const payload = ShiprocketService.finalizeAdhocCreatePayload(basePayload, order, parts, orderItems);
+    try {
+      const { isSameDayOrder, DEFAULT_CHECKOUT_SHIPPING_METHOD } = require('../services/sameDayDelivery.service');
+      if (isSameDayOrder(order)) {
+        payload.checkout_shipping_method = String(
+          order.shippingSnapshot?.checkoutShippingMethod ||
+            process.env.SAME_DAY_CHECKOUT_SHIPPING_METHOD ||
+            DEFAULT_CHECKOUT_SHIPPING_METHOD
+        ).trim() || DEFAULT_CHECKOUT_SHIPPING_METHOD;
+      }
+    } catch (err) {
+      logger.warn('[Shiprocket] same-day adhoc flag skipped', { message: err?.message || String(err) });
+    }
     const isPartial = ShiprocketService.isPartialCodBalanceShipment(parts, order);
     const isAdvanceCovered = ShiprocketService.isAdvanceFullyCoveredNoCod(parts, order);
     const lineSum = roundMoney2(
@@ -1498,6 +1636,9 @@ class ShiprocketService {
       return { success: false, message: 'Valid 6-digit delivery pincode required' };
     }
     if (!this.enabled) {
+      if (opts.sameDayOnly === true) {
+        return { success: false, message: 'Shiprocket is not enabled' };
+      }
       return {
         success: true,
         mock: true,
@@ -1513,21 +1654,46 @@ class ShiprocketService {
       };
     }
 
-    const pickup = String(process.env.STORE_PINCODE || process.env.PICKUP_PINCODE || '560001').replace(/\D/g, '').slice(0, 6);
+    const pickup = String(process.env.STORE_PINCODE || process.env.PICKUP_PINCODE || '')
+      .replace(/\D/g, '')
+      .slice(0, 6);
+    if (pickup.length !== 6) {
+      if (opts.sameDayOnly === true) {
+        return { success: false, message: 'Pickup pincode is not configured' };
+      }
+    }
+    const pickupPostcode = pickup.length === 6 ? pickup : '560001';
+    let hyperlocalParams = null;
     try {
+      const { buildHyperlocalServiceabilityParams } = require('../services/sameDayDelivery.service');
+      hyperlocalParams = buildHyperlocalServiceabilityParams({
+        warehouseLat: opts.warehouseLat,
+        warehouseLng: opts.warehouseLng,
+        deliveryLat: opts.deliveryLat,
+        deliveryLng: opts.deliveryLng
+      });
+    } catch (coordErr) {
+      logger.warn('[Shiprocket] hyperlocal params skipped', { message: coordErr?.message || String(coordErr) });
+      hyperlocalParams = null;
+    }
+    try {
+      const params = {
+        pickup_postcode: pickupPostcode,
+        delivery_postcode: pincode,
+        weight,
+        cod: codAmount > 0 ? 1 : 0,
+        cod_amount: codAmount > 0 ? codAmount : undefined,
+        length,
+        breadth,
+        height
+      };
+      if (hyperlocalParams) {
+        Object.assign(params, hyperlocalParams);
+      }
       const data = await this.requestWithAuth({
         method: 'get',
         url: `${this.baseURL}/external/courier/serviceability`,
-        params: {
-          pickup_postcode: pickup,
-          delivery_postcode: pincode,
-          weight,
-          cod: codAmount > 0 ? 1 : 0,
-          cod_amount: codAmount > 0 ? codAmount : undefined,
-          length,
-          breadth,
-          height
-        },
+        params,
         timeout: 20000
       });
       if (!data) {
@@ -1537,7 +1703,25 @@ class ShiprocketService {
       if (!Array.isArray(list) || list.length === 0) {
         return { success: false, message: 'No courier available for this route' };
       }
-      return { success: true, couriers: list };
+      const {
+        excludeSameDayProductCouriers,
+        filterToSameDayProbeCouriers
+      } = require('../services/sameDayDelivery.service');
+      let couriers = list;
+      if (opts.sameDayOnly === true) {
+        couriers = filterToSameDayProbeCouriers(list);
+      } else if (opts.includeSameDayProducts !== true) {
+        couriers = excludeSameDayProductCouriers(list);
+      }
+      if (!couriers.length) {
+        return {
+          success: false,
+          message: opts.sameDayOnly
+            ? 'No same-day courier available for this route'
+            : 'No courier available for this route'
+        };
+      }
+      return { success: true, couriers };
     } catch (err) {
       logger.error('[Shiprocket] listCouriersForRoute failed:', err.response?.data || err.message);
       return { success: false, message: ShiprocketService.formatAxiosError(err) };

@@ -171,7 +171,7 @@ const createQuoteExpiredError = () =>
 const createQuoteStaleError = (reason, overrides = {}) =>
   createCheckoutFlowError({
     statusCode: STALE_QUOTE_HTTP_STATUS,
-    code: 'QUOTE_STALE',
+    code: overrides.code || 'QUOTE_STALE',
     message: overrides.message || 'Quote is stale. Please refresh checkout totals.',
     details: {
       reason,

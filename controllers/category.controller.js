@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Category = require('../models/Category');
 const Product = require('../models/Product');
 const slugify = require('slugify');
@@ -205,6 +206,12 @@ const getAllCategories = async (req, res) => {
 const getCategoryById = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!id || !mongoose.isValidObjectId(id)) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
     // Categories are shared across storefronts; keep one cache key for all panels.
     const cacheKey = cacheConfig.generateKey('CATEGORY', { id });
 
@@ -241,6 +248,12 @@ const getCategoryById = async (req, res) => {
     return res.status(200).json(responseData);
 
   } catch (error) {
+    if (error?.name === 'CastError') {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
     console.error('Get category error:', error);
     return res.status(500).json({
       success: false,

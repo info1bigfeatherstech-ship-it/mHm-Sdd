@@ -65,6 +65,17 @@ const orderSchema = new mongoose.Schema(
       default: 'shiprocket',
       index: true
     },
+
+    /**
+     * Checkout speed choice. same_day always books Shiprocket Quick (SR_QUICK)
+     * even if the storefront's active provider is Shipmozo.
+     */
+    shippingSpeed: {
+      type: String,
+      enum: ['standard', 'same_day'],
+      default: 'standard',
+      index: true
+    },
     
     orderStatus: {
       type: String,
@@ -305,7 +316,15 @@ const orderSchema = new mongoose.Schema(
       shipmozoCourierId: { type: Number, default: null },
       /** Provider that produced this quote */
       provider: { type: String, enum: ['shiprocket', 'shipmozo', null], default: null },
-      pickupsAutomaticallyScheduled: { type: Boolean, default: null }
+      pickupsAutomaticallyScheduled: { type: Boolean, default: null },
+      shippingSpeed: { type: String, enum: ['standard', 'same_day', null], default: null },
+      checkoutShippingMethod: { type: String, default: null },
+      etaLabel: { type: String, default: null },
+      freightInr: { type: Number, default: null },
+      customerShippingInr: { type: Number, default: null },
+      sameDayHoldAt: { type: Date, default: null },
+      sameDayHoldReason: { type: String, default: null },
+      sameDayHoldLiveRateInr: { type: Number, default: null }
     },
 
     /** Package weight/dims sent to Shiprocket at checkout (frozen at order place) */
@@ -430,5 +449,6 @@ orderSchema.pre('save', async function () {
 
 orderSchema.index({ userId: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1, orderStatus: 1 });
+orderSchema.index({ storefront: 1, shippingSpeed: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Order', orderSchema);

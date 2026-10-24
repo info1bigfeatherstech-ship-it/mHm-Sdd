@@ -4,6 +4,17 @@ const {
   DEFAULT_SHIPPING_PROVIDER,
   normalizeShippingProvider
 } = require('../constants/shippingProviders');
+const {
+  cloneSameDay,
+  toSameDayPublic,
+  normalizeSameDayAdminInput,
+  assertCanEnableSameDay
+} = require('./sameDayDelivery.service');
+const {
+  cloneStandardDelivery,
+  toStandardDeliveryPublic,
+  normalizeStandardDeliveryAdminInput
+} = require('./checkoutShippingMode.service');
 const logger = require('../utils/logger');
 
 const VALID_STOREFRONTS = new Set(['ecomm', 'wholesale']);
@@ -98,6 +109,8 @@ function toPublicConfig(doc) {
         !pickup ? 'pickupPincode' : null
       ].filter(Boolean)
     },
+    standardDelivery: toStandardDeliveryPublic(doc?.standardDelivery),
+    sameDay: toSameDayPublic(doc?.sameDay),
     updatedAt: doc?.updatedAt || null
   };
 }
@@ -118,7 +131,9 @@ function toRuntimeConfig(doc) {
       warehouseId: resolveShipmozoWarehouseId(doc),
       pickupPincode: resolveShipmozoPickupPincode(doc),
       warehouseAddressTitle: doc?.shipmozo?.warehouseAddressTitle || null
-    }
+    },
+    standardDelivery: cloneStandardDelivery(doc?.standardDelivery),
+    sameDay: cloneSameDay(doc?.sameDay)
   };
 }
 
@@ -150,7 +165,9 @@ async function getOrCreateSettings(storefront) {
   const seed = {
     storefront: sf,
     activeProvider: normalizeShippingProvider(template?.activeProvider) || DEFAULT_SHIPPING_PROVIDER,
-    shipmozo: cloneShipmozo(template?.shipmozo)
+    shipmozo: cloneShipmozo(template?.shipmozo),
+    standardDelivery: cloneStandardDelivery(template?.standardDelivery),
+    sameDay: cloneSameDay(template?.sameDay)
   };
 
   try {
@@ -184,6 +201,19 @@ async function getRuntimeConfig(storefront) {
  * Provider used for NEW checkout / place-order. Falls back to shiprocket if
  * shipmozo is active but not ready (keys/warehouse/pin missing).
  */
+async function isStandardDeliveryEnabledForStorefront(storefront) {
+  try {
+    const runtime = await getRuntimeConfig(storefront);
+    return runtime?.standardDelivery?.enabled !== false;
+  } catch (err) {
+    logger.warn('[shippingProviderSettings] standardDelivery flag load failed — defaulting ON', {
+      storefront,
+      message: err?.message || String(err)
+    });
+    return true;
+  }
+}
+
 async function getActiveProviderForNewOrders(storefront) {
   const runtime = await getRuntimeConfig(storefront);
   if (runtime.activeProvider === SHIPPING_PROVIDERS.SHIPMOZO) {
@@ -224,11 +254,13 @@ async function applyAdminPatch(body, updatedByUserId, storefront) {
   const errors = [];
   const hasActive = body.activeProvider !== undefined;
   const hasShipmozo = body.shipmozo !== undefined && body.shipmozo !== null;
+  const hasSameDay = body.sameDay !== undefined && body.sameDay !== null;
+  const hasStandardDelivery = body.standardDelivery !== undefined && body.standardDelivery !== null;
 
-  if (!hasActive && !hasShipmozo) {
+  if (!hasActive && !hasShipmozo && !hasSameDay && !hasStandardDelivery) {
     return {
       ok: false,
-      errors: ['Provide activeProvider and/or shipmozo config fields']
+      errors: ['Provide activeProvider, shipmozo, standardDelivery, and/or sameDay config fields']
     };
   }
 
@@ -257,6 +289,26 @@ async function applyAdminPatch(body, updatedByUserId, storefront) {
   const smPatch = hasShipmozo && typeof body.shipmozo === 'object' ? body.shipmozo : null;
   if (hasShipmozo && !smPatch) {
     errors.push('shipmozo must be an object when provided');
+  }
+
+  let sameDayPatch = null;
+  if (hasSameDay) {
+    const parsed = normalizeSameDayAdminInput(body.sameDay);
+    if (!parsed.ok) {
+      errors.push(...(parsed.errors || ['Invalid sameDay settings']));
+    } else {
+      sameDayPatch = parsed.value;
+    }
+  }
+
+  let standardDeliveryPatch = null;
+  if (hasStandardDelivery) {
+    const parsed = normalizeStandardDeliveryAdminInput(body.standardDelivery);
+    if (!parsed.ok) {
+      errors.push(...(parsed.errors || ['Invalid standardDelivery settings']));
+    } else {
+      standardDeliveryPatch = parsed.value;
+    }
   }
 
   if (smPatch) {
@@ -305,6 +357,60 @@ async function applyAdminPatch(body, updatedByUserId, storefront) {
     if (smPatch.warehouseAddressTitle !== undefined) {
       const v = String(smPatch.warehouseAddressTitle || '').trim();
       $set['shipmozo.warehouseAddressTitle'] = v || null;
+    }
+  }
+
+  if (standardDeliveryPatch && standardDeliveryPatch.enabled !== undefined) {
+    $set['standardDelivery.enabled'] = Boolean(standardDeliveryPatch.enabled);
+  }
+
+  if (sameDayPatch) {
+    if (sameDayPatch.enabled !== undefined) {
+      $set['sameDay.enabled'] = sameDayPatch.enabled;
+    }
+    if (sameDayPatch.pincodes !== undefined) {
+      $set['sameDay.pincodes'] = sameDayPatch.pincodes;
+    }
+    if (sameDayPatch.openHour !== undefined) {
+      $set['sameDay.openHour'] = sameDayPatch.openHour;
+    }
+    if (sameDayPatch.cutoffHour !== undefined) {
+      $set['sameDay.cutoffHour'] = sameDayPatch.cutoffHour;
+    }
+    if (sameDayPatch.floorFeeInr !== undefined) {
+      $set['sameDay.floorFeeInr'] = sameDayPatch.floorFeeInr;
+    }
+    if (sameDayPatch.feeBuffer !== undefined) {
+      $set['sameDay.feeBuffer'] = sameDayPatch.feeBuffer;
+    }
+    if (sameDayPatch.warehouseLat !== undefined) {
+      $set['sameDay.warehouseLat'] = sameDayPatch.warehouseLat;
+    }
+    if (sameDayPatch.warehouseLng !== undefined) {
+      $set['sameDay.warehouseLng'] = sameDayPatch.warehouseLng;
+    }
+
+    const mergedSameDay = {
+      enabled:
+        $set['sameDay.enabled'] !== undefined
+          ? $set['sameDay.enabled']
+          : current.sameDay?.enabled === true,
+      pincodes:
+        $set['sameDay.pincodes'] !== undefined
+          ? $set['sameDay.pincodes']
+          : current.sameDay?.pincodes || [],
+      openHour:
+        $set['sameDay.openHour'] !== undefined
+          ? $set['sameDay.openHour']
+          : current.sameDay?.openHour,
+      cutoffHour:
+        $set['sameDay.cutoffHour'] !== undefined
+          ? $set['sameDay.cutoffHour']
+          : current.sameDay?.cutoffHour
+    };
+    const enableGuard = assertCanEnableSameDay(mergedSameDay);
+    if (!enableGuard.ok) {
+      return { ok: false, errors: enableGuard.errors };
     }
   }
 
@@ -403,6 +509,7 @@ module.exports = {
   getPublicConfig,
   getRuntimeConfig,
   getActiveProviderForNewOrders,
+  isStandardDeliveryEnabledForStorefront,
   applyAdminPatch,
   toPublicConfig,
   toRuntimeConfig,

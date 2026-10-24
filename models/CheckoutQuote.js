@@ -16,6 +16,13 @@ const checkoutQuoteSchema = new mongoose.Schema(
     taxes: { type: Number, required: true, min: 0, default: 0 },
     amountPayable: { type: Number, required: true, min: 0 },
 
+    shippingSpeed: {
+      type: String,
+      enum: ['standard', 'same_day'],
+      default: 'standard'
+    },
+    sameDayMeta: { type: mongoose.Schema.Types.Mixed, default: null },
+
     shippingMeta: {
       isDeliverable: { type: Boolean, default: false },
       estimatedDays: { type: String, default: null },
@@ -26,7 +33,12 @@ const checkoutQuoteSchema = new mongoose.Schema(
       pickupsAutomaticallyScheduled: { type: Boolean, default: null },
       codAvailable: { type: Boolean, default: true },
       message: { type: String, default: null },
-      mock: { type: Boolean, default: false }
+      mock: { type: Boolean, default: false },
+      shippingSpeed: { type: String, enum: ['standard', 'same_day', null], default: null },
+      checkoutShippingMethod: { type: String, default: null },
+      etaLabel: { type: String, default: null },
+      freightInr: { type: Number, default: null },
+      codFeeInr: { type: Number, default: null }
     },
 
     totalWeightKg: { type: Number, default: null },

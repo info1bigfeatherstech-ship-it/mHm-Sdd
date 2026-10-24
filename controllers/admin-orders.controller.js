@@ -13,6 +13,7 @@ const {
   mapOrderRow
 } = require('../services/adminOrderDashboard.service');
 const { autoSyncStaleOrdersInRange } = require('../services/adminOrderAutoSync.service');
+const { buildShippingSpeedScopeMatch } = require('../services/sameDayDelivery.service');
 
 function sendError(res, err, fallbackMessage) {
   const status = err.statusCode && Number.isFinite(err.statusCode) ? err.statusCode : 500;
@@ -50,7 +51,11 @@ exports.getDashboardSummary = async (req, res) => {
       rangePreset
     });
 
-    const scopeMatch = req.adminScope?.orderMatch || {};
+    const scopeMatch = mergeFilters(
+      req.adminScope?.orderMatch || {},
+      null,
+      buildShippingSpeedScopeMatch(req.query.shippingSpeedScope)
+    );
     const summary = await aggregateSummary(range.from, range.to, scopeMatch);
 
     return res.json({
@@ -117,7 +122,11 @@ exports.getOrdersList = async (req, res) => {
     const sortOrder = String(req.query.sortOrder || 'desc').toLowerCase() === 'asc' ? 1 : -1;
     const sort = { [sortBy]: sortOrder };
 
-    const scopeMatch = req.adminScope?.orderMatch || {};
+    const scopeMatch = mergeFilters(
+      req.adminScope?.orderMatch || {},
+      null,
+      buildShippingSpeedScopeMatch(req.query.shippingSpeedScope)
+    );
     const dateScopeMatch = buildScopedDateMatch(range.from, range.to, scopeMatch);
     const search = await buildSearchFilter(searchRaw);
     /** Global search: skip status bucket so order ID / phone matches any tab (incl. cancelled). */
@@ -220,6 +229,7 @@ exports.getOrdersList = async (req, res) => {
         filters: {
           bucket: search ? null : String(req.query.bucket || 'all').toLowerCase(),
           search: searchRaw || null,
+          shippingSpeedScope: String(req.query.shippingSpeedScope || 'standard').toLowerCase(),
           /** True when list ignored from/to / last30 because a search query is active. */
           searchIgnoresDateRange
         }

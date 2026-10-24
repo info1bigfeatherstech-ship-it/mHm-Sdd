@@ -12,6 +12,11 @@ const {
   MAX_FULL_NAME_LEN,
   MAX_COURIER_CONSIGNEE_NAME_LEN
 } = require('../utils/addressValidation');
+const {
+  buildAddressCreatePayload,
+  inferIndianState,
+  CHECKOUT_HOUSE_MAX
+} = require('../utils/splitCheckoutAddress');
 
 function testComposeMatchesShiprocketShape() {
   const built = buildCourierStreetLines({
@@ -138,11 +143,62 @@ function testFullNameShipmozoCap() {
   assert.strictEqual(sanitizeCourierConsigneeName('Davichand Sharma'), 'Davichand Sharma');
 }
 
+function testSplitCheckoutAddress() {
+  const blob =
+    'Plot No 33, Shree Housing Society, Green Feld, Opposite Shivas Residency, Godhani Road, Mankapur, Nagpur, Maharashtra 440030';
+  const fromBlob = buildAddressCreatePayload({
+    name: 'Ravi Sharma',
+    phone: '+919876543210',
+    address: blob,
+    city: 'Nagpur',
+    pincode: '440030'
+  });
+  assert.ok(fromBlob.houseNumber.length <= CHECKOUT_HOUSE_MAX);
+  assert.notStrictEqual(fromBlob.houseNumber, blob);
+  assert.ok(fromBlob.addressLine1.length >= 10);
+  assert.strictEqual(fromBlob.state, 'Maharashtra');
+  assert.strictEqual(fromBlob.phone, '9876543210');
+  assert.ok(fromBlob.houseNumber.length + fromBlob.addressLine1.length <= 280);
+
+  const structured = buildAddressCreatePayload({
+    name: 'Ravi Sharma',
+    phone: '9876543210',
+    houseFlat: '42B',
+    streetLine1: 'MG Road near metro station',
+    areaLocality: 'Naupada',
+    city: 'Thane',
+    pincode: '400601',
+    state: 'Maharashtra',
+    buildingNo: 'Sunrise',
+    floorNo: '4'
+  });
+  assert.strictEqual(structured.houseNumber, '42B');
+  assert.strictEqual(structured.addressLine1, 'MG Road near metro station');
+  assert.strictEqual(structured.area, 'Naupada');
+  assert.strictEqual(structured.building, 'Sunrise');
+  assert.strictEqual(structured.state, 'Maharashtra');
+
+  const thaneLegacy = buildAddressCreatePayload({
+    name: 'Customer',
+    phone: '9876543210',
+    address: 'A-12, Sector 5, Kolshet Road, Thane West',
+    city: 'Thane',
+    pincode: '400607'
+  });
+  assert.strictEqual(thaneLegacy.houseNumber, 'A-12');
+  assert.ok(thaneLegacy.houseNumber.length <= 80);
+  assert.strictEqual(thaneLegacy.state, 'Maharashtra');
+
+  assert.strictEqual(inferIndianState('', 'Thane', '', '400601'), 'Maharashtra');
+  assert.strictEqual(inferIndianState('Maharashtra', 'Thane', '', '400601'), 'Maharashtra');
+}
+
 function run() {
   testComposeMatchesShiprocketShape();
   testRejectLongAddressOnSave();
   testAcceptReasonableAddress();
   testFullNameShipmozoCap();
+  testSplitCheckoutAddress();
   console.log('All address validation tests passed.');
 }
 
