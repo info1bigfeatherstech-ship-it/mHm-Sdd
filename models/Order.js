@@ -52,7 +52,19 @@ const orderSchema = new mongoose.Schema(
     userType: { type: String, enum: ['normal', 'wholesaler'], required: true },
 
     /** Checkout channel at order place (for ID prefix + admin scope) */
-    storefront: { type: String, enum: ['ecomm', 'wholesale'], default: 'ecomm' },
+    storefront: { type: String, enum: ['ecomm', 'wholesale', 'dropship'], default: 'ecomm' },
+
+    /**
+     * Dropship partner metadata (isolated channel).
+     * userId on dropship orders is the Dropshipper._id (ObjectId).
+     */
+    dropshipMeta: {
+      ref: { type: String, trim: true, default: null },
+      placedByUserId: { type: mongoose.Schema.Types.ObjectId, default: null },
+      dropshipperId: { type: mongoose.Schema.Types.ObjectId, ref: 'Dropshipper', default: null, index: true },
+      customerPhone: { type: String, trim: true, default: null },
+      customerName: { type: String, trim: true, default: null }
+    },
 
     /**
      * Frozen at place-order from active shipping partner setting.
@@ -433,7 +445,7 @@ const orderSchema = new mongoose.Schema(
 );
 
 // Generate order ID before saving (fallback if controller did not set orderId).
-// Digit suffix is unique across OWB-ECOMM and OWB-WH.
+// Digit suffix is unique across OWB-ECOMM, OWB-WH, and OWB-DS.
 orderSchema.pre('save', async function () {
   if (this.orderId) return;
   this.orderId = await allocateUniqueOrderId({

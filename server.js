@@ -61,6 +61,8 @@ const adminOrdersRoutes = require('./routes/admin-orders.route');
 const adminRtoRoutes = require('./routes/admin-rto.route');
 const adminOosInquiryRoutes = require('./routes/admin-out-of-stock-inquiry.route');
 const oosInquiryPublicRoutes = require('./routes/out-of-stock-inquiry.public.route');
+const giftEnquiryPublicRoutes = require('./routes/corporate-gift-enquiry.public.route');
+const adminGiftEnquiryRoutes = require('./routes/admin-corporate-gift-enquiry.route');
 const userNotificationRoutes = require('./routes/user-notification.route');
 const staffRoutes = require('./routes/staff.route');
 const orderRoutes = require('./routes/orders.route');
@@ -71,6 +73,7 @@ const shippingProviderRoutes = require('./routes/shipping-provider.route');
 const adminCouponRoutes = require('./routes/admin-coupons.route');
 const userCouponRoutes = require('./routes/user-coupons.route');
 const wholesalerRoutes = require('./routes/wholesaler.route');
+const { adminDropshipperRoutes, dropshipperRoutes } = require('./dropshipper');
 const productReviewPublicRoutes = require('./routes/product-review.public.route');
 const productReviewUserRoutes = require('./routes/product-review.user.route');
 const adminProductReviewRoutes = require('./routes/admin-product-review.route');
@@ -530,7 +533,11 @@ app.use('/api/wholesaler/request', limiters.sensitive);
 app.use('/api/wholesaler/activate/send-otp', limiters.sensitive);
 app.use('/api/wholesaler/activate/verify', limiters.sensitive);
 app.use('/api/wholesaler/owner-review', limiters.sensitive);
+app.use('/api/dropshipper/auth/login', limiters.sensitive);
+app.use('/api/dropshipper/auth/register', limiters.sensitive);
+app.use('/api/dropshipper/auth/activate', limiters.sensitive);
 app.use('/api/oos-inquiries', limiters.sensitive);
+app.use('/api/gift-enquiries', limiters.sensitive);
 
 // Orders: dedicated bucket (the `sensitive` cap blocked normal My Orders flow).
 app.use('/api/orders', limiters.orders);
@@ -768,6 +775,7 @@ app.use('/api/admin/seo-analytics', seoAnalyticsRoutes);
 app.use('/api/admin/orders', adminOrdersRoutes);
 app.use('/api/admin/rto', adminRtoRoutes);
 app.use('/api/admin/oos-inquiries', adminOosInquiryRoutes);
+app.use('/api/admin/gift-enquiries', adminGiftEnquiryRoutes);
 app.use('/api/admin/staff', staffRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/checkout', checkoutRoutes);
@@ -783,7 +791,10 @@ app.use('/api/product-reviews/public', limiters.products, productReviewPublicRou
 app.use('/api/product-reviews', limiters.write, productReviewUserRoutes);
 app.use('/api/admin/product-reviews', limiters.admin, adminProductReviewRoutes);
 app.use('/api/wholesaler', wholesalerRoutes);
+app.use('/api/admin/dropshipper', adminDropshipperRoutes);
+app.use('/api/dropshipper', dropshipperRoutes);
 app.use('/api/oos-inquiries', oosInquiryPublicRoutes);
+app.use('/api/gift-enquiries', giftEnquiryPublicRoutes);
 
 // ============================================================================
 // Error Handling Middleware

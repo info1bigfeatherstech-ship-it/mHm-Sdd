@@ -1,12 +1,17 @@
 /**
  * Enforces storefront scope for admin operational APIs.
  * Backward compatible: missing scope on user doc => ecomm only.
+ *
+ * Dropship: included in VALID. Staff with ecomm in allowedStorefronts are
+ * runtime-granted dropship access. Requested storefront from header is
+ * preserved (dropship is NOT collapsed to ecomm).
  */
 
 const { STOREFRONT_HEADER_ALIASES } = require('../constants/storefrontHeaders');
 const { buildOrderMatchForStorefront } = require('../utils/adminOrderScope');
+const { resolveStorefront } = require('../config/storefront.config');
 
-const VALID_STOREFRONTS = new Set(['ecomm', 'wholesale']);
+const VALID_STOREFRONTS = new Set(['ecomm', 'wholesale', 'dropship']);
 
 function normalizeAllowedStorefronts(raw) {
   if (!Array.isArray(raw) || raw.length === 0) return ['ecomm'];
@@ -16,7 +21,23 @@ function normalizeAllowedStorefronts(raw) {
     if (!VALID_STOREFRONTS.has(key)) continue;
     if (!deduped.includes(key)) deduped.push(key);
   }
+  // Runtime grant: ecomm staff may operate the dropship admin panel.
+  if (deduped.includes('ecomm') && !deduped.includes('dropship')) {
+    deduped.push('dropship');
+  }
   return deduped.length ? deduped : ['ecomm'];
+}
+
+function resolveRequestedStorefront(req, hasExplicitHeader, allowedStorefronts) {
+  if (hasExplicitHeader) {
+    // Prefer already-resolved req.storefront (includes dropship via storefront.config).
+    const fromReq = String(req.storefront || '').toLowerCase().trim();
+    if (VALID_STOREFRONTS.has(fromReq)) return fromReq;
+    const resolved = String(resolveStorefront(req) || '').toLowerCase().trim();
+    if (VALID_STOREFRONTS.has(resolved)) return resolved;
+    return 'ecomm';
+  }
+  return allowedStorefronts.length === 1 ? allowedStorefronts[0] : 'ecomm';
 }
 
 function _enforceAdminStorefrontScope(req, res, next, options = {}) {
@@ -33,11 +54,8 @@ function _enforceAdminStorefrontScope(req, res, next, options = {}) {
       message: 'x-storefront header is required for this admin operation.'
     });
   }
-  // If frontend did not send storefront and user is single-scope, infer that scope.
-  // This prevents wholesale admins from accidentally falling back to ecomm default.
-  const requestedStorefront = hasExplicitHeader
-    ? (req.storefront === 'wholesale' ? 'wholesale' : 'ecomm')
-    : (allowedStorefronts.length === 1 ? allowedStorefronts[0] : 'ecomm');
+
+  const requestedStorefront = resolveRequestedStorefront(req, hasExplicitHeader, allowedStorefronts);
 
   if (!allowedStorefronts.includes(requestedStorefront)) {
     return res.status(403).json({
@@ -51,26 +69,42 @@ function _enforceAdminStorefrontScope(req, res, next, options = {}) {
     storefront: requestedStorefront,
     explicitStorefront: hasExplicitHeader ? requestedStorefront : null,
     allowedStorefronts,
-    /** Orders: userType + storefront (ecomm includes legacy missing storefront). */
+    /** Orders: scoped by storefront via buildOrderMatchForStorefront. */
     orderMatch: buildOrderMatchForStorefront(requestedStorefront),
     userMatch:
       requestedStorefront === 'wholesale'
         ? {
             $or: [{ accountScope: 'wholesale' }, { userType: 'wholesaler' }, { role: 'wholesaler' }]
           }
-        : {
-            $and: [
-              {
-                $or: [
-                  { accountScope: 'ecomm' },
-                  { accountScope: { $exists: false } },
-                  { accountScope: null }
-                ]
-              },
-              { userType: { $nin: ['wholesaler', 'admin'] } },
-              { role: { $nin: ['wholesaler', 'admin', 'product_manager', 'order_manager', 'marketing_manager', 'inventory_manager'] } }
-            ]
-          }
+        : requestedStorefront === 'dropship'
+          ? {
+              // Dropship partners live on Dropshipper model — user match unused for DS orders.
+              role: 'dropshipper'
+            }
+          : {
+              $and: [
+                {
+                  $or: [
+                    { accountScope: 'ecomm' },
+                    { accountScope: { $exists: false } },
+                    { accountScope: null }
+                  ]
+                },
+                { userType: { $nin: ['wholesaler', 'admin'] } },
+                {
+                  role: {
+                    $nin: [
+                      'wholesaler',
+                      'admin',
+                      'product_manager',
+                      'order_manager',
+                      'marketing_manager',
+                      'inventory_manager'
+                    ]
+                  }
+                }
+              ]
+            }
   };
 
   return next();
@@ -89,4 +123,3 @@ module.exports = {
   requireStrictAdminStorefrontScope,
   normalizeAllowedStorefronts
 };
-

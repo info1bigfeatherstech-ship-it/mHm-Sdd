@@ -203,7 +203,7 @@ const userSchema = new mongoose.Schema(
      */
     allowedStorefronts: {
       type: [String],
-      enum: ["ecomm", "wholesale"],
+      enum: ["ecomm", "wholesale", "dropship"],
       default: ["ecomm"]
     },
 

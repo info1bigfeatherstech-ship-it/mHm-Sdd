@@ -3,7 +3,7 @@ const { isOrderStaffRequest } = require('../utils/checkoutFlow');
 const logger = require('../utils/logger');
 
 /**
- * Sets req.storefront to 'ecomm' | 'wholesale' for all flows.
+ * Sets req.storefront to 'ecomm' | 'wholesale' | 'dropship' for all flows.
  */
 function resolveStorefrontMiddleware(req, res, next) {
   try {

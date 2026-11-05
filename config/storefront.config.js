@@ -44,6 +44,7 @@ function resolveStorefrontFromHeader(raw) {
   if (raw == null || raw === '') return null;
   const v = String(raw).toLowerCase().trim();
   if (v === 'wholesale' || v === 'wholesaler' || v === 'b2b') return 'wholesale';
+  if (v === 'dropship' || v === 'dropshipper' || v === 'ds') return 'dropship';
   if (v === 'ecomm' || v === 'retail' || v === 'shop' || v === 'store' || v === 'b2c') {
     return 'ecomm';
   }
@@ -60,7 +61,7 @@ function readStorefrontHeader(req) {
 
 /**
  * @param {import('express').Request} req
- * @returns {'ecomm'|'wholesale'}
+ * @returns {'ecomm'|'wholesale'|'dropship'}
  */
 function resolveStorefront(req) {
   const fromHeader = resolveStorefrontFromHeader(readStorefrontHeader(req));

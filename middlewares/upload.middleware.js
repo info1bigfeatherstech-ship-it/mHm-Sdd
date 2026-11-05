@@ -235,6 +235,47 @@ const labelLogoUpload = multer({
 
 const uploadLabelLogoFile = labelLogoUpload.single('logo');
 
+// ===============================
+// CORPORATE GIFT / BULK ENQUIRY FILES
+// logos (max 3), referencePhotos (max 6, images), businessCard (max 1)
+// Hard limit 20MB/file; content validated again via magic-bytes in upload service.
+// ===============================
+const GIFT_ENQUIRY_MAX_BYTES = 20 * 1024 * 1024;
+
+const giftEnquiryFileFilter = (req, file, cb) => {
+  const allowed = [
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/jpg',
+    'image/gif',
+    'image/bmp',
+    'image/heic',
+    'image/heif',
+    'image/avif'
+  ];
+  if (allowed.includes(file.mimetype)) {
+    cb(null, true);
+    return;
+  }
+  cb(new Error('Only PDF and image files are allowed for gift enquiry uploads'), false);
+};
+
+const giftEnquiryUpload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: giftEnquiryFileFilter,
+  limits: {
+    fileSize: GIFT_ENQUIRY_MAX_BYTES,
+    files: 10
+  }
+});
+
+const uploadGiftEnquiryFiles = giftEnquiryUpload.fields([
+  { name: 'logos', maxCount: 3 },
+  { name: 'referencePhotos', maxCount: 6 },
+  { name: 'businessCard', maxCount: 1 }
+]);
 
 module.exports = {
   uploadProductImages,
@@ -245,5 +286,6 @@ module.exports = {
   uploadWholesalerProofs,
   uploadReturnProofs,
   uploadReviewImages,
-  uploadLabelLogoFile
+  uploadLabelLogoFile,
+  uploadGiftEnquiryFiles
 };

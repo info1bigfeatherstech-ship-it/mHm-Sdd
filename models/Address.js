@@ -14,7 +14,7 @@ const addressSchema = new mongoose.Schema({
    */
   storefront: {
     type: String,
-    enum: ['ecomm', 'wholesale'],
+    enum: ['ecomm', 'wholesale', 'dropship'],
     default: 'ecomm',
     index: true
   },
