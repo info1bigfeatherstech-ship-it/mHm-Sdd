@@ -511,7 +511,7 @@ function mapOrderRow(order) {
     currency: 'INR',
     orderStatus: o.orderStatus,
     shippingProvider: resolveOrderShippingProvider(o),
-    shippingSpeed: o.shippingSpeed === 'same_day' ? 'same_day' : 'standard',
+    shippingSpeed: o.shippingSpeed || 'standard',
     etaLabel: o.shippingSnapshot?.etaLabel || null,
     fulfillmentLabel: fulfillmentLabelForAdminListRow(o.orderStatus, si.providerStatus, bucketKey, o),
     fulfillmentBucket: bucketKey,

@@ -992,7 +992,7 @@ async function mapInConcurrentWindows(ids, parallel, handler) {
 /**
  * @param {import('mongoose').Document} order
  * @param {number|null|undefined} courierIdOverride
- * @param {{ confirmSubstitute?: boolean, bookAnyway?: boolean }} [opts]
+ * @param {{ confirmSubstitute?: boolean }} [opts]
  */
 async function runAssignShipFromOrder(order, courierIdOverride, opts = {}) {
   try {
@@ -1162,8 +1162,7 @@ async function runAssignShipFromOrder(order, courierIdOverride, opts = {}) {
         courierIdOverride != null && Number.isFinite(Number(courierIdOverride))
           ? Number(courierIdOverride)
           : null,
-      confirmSubstitute: Boolean(opts.confirmSubstitute),
-      bookAnyway: Boolean(opts.bookAnyway)
+      confirmSubstitute: Boolean(opts.confirmSubstitute)
     });
 
     if (!assignRes.success) {
@@ -1770,40 +1769,7 @@ exports.adminFulfillmentAssignShip = async (req, res) => {
     if (!requireShipmentOpsAction(order, 'shipNow', res)) return;
     const courierId = req.body?.courierId != null ? Number(req.body.courierId) : null;
     const confirmSubstitute = Boolean(req.body?.confirmSubstitute);
-    const bookAnyway = Boolean(req.body?.bookAnyway);
-    const hold = Boolean(req.body?.hold);
-    if (hold) {
-      try {
-        const { isSameDayOrder } = require('../services/sameDayDelivery.service');
-        if (!isSameDayOrder(order)) {
-          return jsonError(res, 400, 'SAME_DAY_HOLD_NOT_APPLICABLE', 'Hold is only available for Same Day orders.');
-        }
-        order.shippingSnapshot = order.shippingSnapshot || {};
-        order.shippingSnapshot.sameDayHoldAt = new Date();
-        order.shippingSnapshot.sameDayHoldReason = String(req.body?.reason || 'admin_hold').slice(0, 120);
-        const liveRaw = req.body?.liveRateInr;
-        const live = liveRaw === undefined || liveRaw === null || liveRaw === '' ? NaN : Number(liveRaw);
-        order.shippingSnapshot.sameDayHoldLiveRateInr =
-          Number.isFinite(live) && live >= 0 ? live : null;
-        order.markModified('shippingSnapshot');
-        await order.save();
-        return res.json({
-          success: true,
-          code: 'SAME_DAY_HELD',
-          message:
-            'Same Day shipment held. Customer bill is unchanged. Retry Ship Now after rain/rider availability, or cancel/refund.',
-          customerBillUnchanged: true,
-          order
-        });
-      } catch (holdErr) {
-        logger.error('adminFulfillmentAssignShip hold failed', {
-          orderId: order?.orderId,
-          message: holdErr?.message || String(holdErr)
-        });
-        return jsonError(res, 500, 'SAME_DAY_HOLD_FAILED', holdErr?.message || 'Could not hold Same Day shipment.');
-      }
-    }
-    const assignRes = await runAssignShipFromOrder(order, courierId, { confirmSubstitute, bookAnyway });
+    const assignRes = await runAssignShipFromOrder(order, courierId, { confirmSubstitute });
     if (!assignRes.success) {
       const c = assignRes.code || 'ASSIGN_AWB_FAILED';
       let status = 502;
@@ -1823,11 +1789,7 @@ exports.adminFulfillmentAssignShip = async (req, res) => {
         status = 500;
       } else if (c === 'SHIPROCKET_WALLET_OR_BALANCE') {
         status = 402;
-      } else if (
-        c === 'QUOTED_COURIER_UNAVAILABLE' ||
-        c === 'NO_ALTERNATE_COURIER' ||
-        c === 'SAME_DAY_NO_COURIER_WITHIN_CAP'
-      ) {
+      } else if (c === 'QUOTED_COURIER_UNAVAILABLE' || c === 'NO_ALTERNATE_COURIER') {
         status = 409;
       }
       return jsonError(res, status, c, assignRes.message, {
@@ -1836,9 +1798,7 @@ exports.adminFulfillmentAssignShip = async (req, res) => {
         suggestedCourier: assignRes.suggestedCourier || null,
         availableCouriers: assignRes.availableCouriers || null,
         quotedFreightInr: assignRes.quotedFreightInr ?? null,
-        cheapestLiveInr: assignRes.cheapestLiveInr ?? null,
         freightGapInr: assignRes.freightGapInr ?? null,
-        adminActions: assignRes.adminActions || null,
         customerBillUnchanged: assignRes.customerBillUnchanged !== false
       });
     }
@@ -2515,41 +2475,12 @@ exports.adminFulfillmentListCouriers = async (req, res) => {
     if (deliveryPin.length !== 6) {
       return jsonError(res, 400, 'INVALID_DELIVERY_PINCODE', 'Order address must include a 6-digit delivery pincode.');
     }
-    const { isSameDayOrder } = require('../services/sameDayDelivery.service');
-    const sameDay = isSameDayOrder(order);
-    let coordOpts = {};
-    if (sameDay) {
-      try {
-        const { getConfigForStorefront } = require('../services/sameDayDelivery.service');
-        const { withSameDayDeliveryCoords, hasUsableCoords } = require('../services/addressGeocode.service');
-        const cfg = await getConfigForStorefront(order.storefront);
-        coordOpts.warehouseLat = cfg?.warehouseLat;
-        coordOpts.warehouseLng = cfg?.warehouseLng;
-        const addr = order.addressSnapshot || {};
-        if (hasUsableCoords(addr.location)) {
-          coordOpts.deliveryLat = Number(addr.location.lat);
-          coordOpts.deliveryLng = Number(addr.location.lng);
-        } else {
-          const coords = await withSameDayDeliveryCoords(addr, order.storefront);
-          coordOpts.deliveryLat = coords?.lat;
-          coordOpts.deliveryLng = coords?.lng;
-        }
-      } catch (coordErr) {
-        logger.warn('adminFulfillmentListCouriers same-day coords skipped', {
-          orderId: order?.orderId,
-          message: coordErr?.message || String(coordErr)
-        });
-      }
-    }
     const listRes = await ShiprocketService.listCouriersForRoute(deliveryPin, {
       weightKg: parts.totalWeight,
       lengthCm: parts.maxL,
       widthCm: parts.maxB,
       heightCm: parts.maxH,
-      codAmount: parts.codAmountForQuote,
-      sameDayOnly: sameDay,
-      includeSameDayProducts: sameDay,
-      ...coordOpts
+      codAmount: parts.codAmountForQuote
     });
     if (!listRes.success) {
       return jsonError(res, 502, 'COURIER_LIST_FAILED', listRes.message || 'Could not list couriers');

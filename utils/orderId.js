@@ -10,9 +10,9 @@
 
 const crypto = require('crypto');
 
-const PREFIX_WHOLESALE = 'OWB-WH-';
-const PREFIX_ECOMM = 'OWB-ECOMM-';
-const PREFIX_DROPSHIP = 'OWB-DS-';
+const PREFIX_WHOLESALE = 'MHM-WH-';
+const PREFIX_ECOMM = 'MHM-ECOMM-';
+const PREFIX_DROPSHIP = 'MHM-DS-';
 const ORDER_ID_DIGIT_LEN = 6;
 const ORDER_ID_DIGIT_MOD = 10 ** ORDER_ID_DIGIT_LEN;
 const DEFAULT_ALLOCATE_ATTEMPTS = 32;
@@ -65,7 +65,7 @@ function orderIdsForDigitSuffix(digits) {
 
 /**
  * @param {{ storefront?: string, userType?: string }} input
- * @returns {string} e.g. OWB-ECOMM-482913, OWB-WH-019284, or OWB-DS-102938
+ * @returns {string} e.g. MHM-ECOMM-482913, MHM-WH-019284, or MHM-DS-102938
  */
 function generateOrderId({ storefront, userType } = {}) {
   const prefix = resolveOrderIdPrefix({ storefront, userType });

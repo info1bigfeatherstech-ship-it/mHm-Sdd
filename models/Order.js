@@ -79,12 +79,11 @@ const orderSchema = new mongoose.Schema(
     },
 
     /**
-     * Checkout speed choice. same_day always books Shiprocket Quick (SR_QUICK)
-     * even if the storefront's active provider is Shipmozo.
+     * Checkout speed choice. Only standard shipping is supported.
      */
     shippingSpeed: {
       type: String,
-      enum: ['standard', 'same_day'],
+      enum: ['standard'],
       default: 'standard',
       index: true
     },
@@ -329,14 +328,11 @@ const orderSchema = new mongoose.Schema(
       /** Provider that produced this quote */
       provider: { type: String, enum: ['shiprocket', 'shipmozo', null], default: null },
       pickupsAutomaticallyScheduled: { type: Boolean, default: null },
-      shippingSpeed: { type: String, enum: ['standard', 'same_day', null], default: null },
+      shippingSpeed: { type: String, enum: ['standard', null], default: null },
       checkoutShippingMethod: { type: String, default: null },
       etaLabel: { type: String, default: null },
       freightInr: { type: Number, default: null },
-      customerShippingInr: { type: Number, default: null },
-      sameDayHoldAt: { type: Date, default: null },
-      sameDayHoldReason: { type: String, default: null },
-      sameDayHoldLiveRateInr: { type: Number, default: null }
+      customerShippingInr: { type: Number, default: null }
     },
 
     /** Package weight/dims sent to Shiprocket at checkout (frozen at order place) */

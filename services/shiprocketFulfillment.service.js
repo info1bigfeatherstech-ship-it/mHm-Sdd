@@ -45,18 +45,8 @@ function quotedCourierFromOrder(order) {
 
 /**
  * Customer-paid shipping reference for margin guardrails only — not for rewriting bills.
- * Same Day uses the checkout fee the customer paid (floor/buffer), not the live Quick rate.
  */
 function quotedFreightInr(order) {
-  try {
-    const { isSameDayOrder, customerPaidSameDayShippingInr } = require('./sameDayDelivery.service');
-    if (isSameDayOrder(order)) {
-      const paid = customerPaidSameDayShippingInr(order);
-      if (paid != null) return paid;
-    }
-  } catch (_) {
-    /* fall through to snapshot freight */
-  }
   const snap = order?.shippingSnapshot || {};
   const n = Number(
     snap.customerShippingInr != null
@@ -70,32 +60,6 @@ function quotedFreightInr(order) {
             : order?.deliveryCharges
   );
   return Number.isFinite(n) && n >= 0 ? round2(n) : null;
-}
-
-async function resolveSameDayLiveRateOpts(order) {
-  const extra = {};
-  try {
-    const { getConfigForStorefront } = require('./sameDayDelivery.service');
-    const { withSameDayDeliveryCoords, hasUsableCoords } = require('./addressGeocode.service');
-    const cfg = await getConfigForStorefront(order?.storefront);
-    extra.warehouseLat = cfg?.warehouseLat;
-    extra.warehouseLng = cfg?.warehouseLng;
-    const addr = order?.addressSnapshot || {};
-    if (hasUsableCoords(addr.location)) {
-      extra.deliveryLat = Number(addr.location.lat);
-      extra.deliveryLng = Number(addr.location.lng);
-    } else {
-      const coords = await withSameDayDeliveryCoords(addr, order?.storefront);
-      extra.deliveryLat = coords?.lat;
-      extra.deliveryLng = coords?.lng;
-    }
-  } catch (err) {
-    logger.warn('[Shiprocket] same-day live rate coords skipped', {
-      orderId: order?.orderId,
-      message: err?.message || String(err)
-    });
-  }
-  return extra;
 }
 
 function mapCourierPublic(row) {
@@ -150,18 +114,12 @@ async function loadLiveRatesSafe(order) {
         parts
       };
     }
-    const { isSameDayOrder } = require('./sameDayDelivery.service');
-    const sameDay = isSameDayOrder(order);
-    const coordOpts = sameDay ? await resolveSameDayLiveRateOpts(order) : {};
     const listRes = await ShiprocketService.listCouriersForRoute(deliveryPin, {
       weightKg: parts.totalWeight,
       lengthCm: parts.maxL,
       widthCm: parts.maxB,
       heightCm: parts.maxH,
-      codAmount: parts.codAmountForQuote,
-      sameDayOnly: sameDay,
-      includeSameDayProducts: sameDay,
-      ...coordOpts
+      codAmount: parts.codAmountForQuote
     });
     const couriers = Array.isArray(listRes?.couriers) ? listRes.couriers : [];
     if (!listRes?.success || !couriers.length) {
@@ -228,37 +186,6 @@ function unavailablePayload({
   };
 }
 
-function sameDayCapBlockPayload({ quoted, suggested, available, freightCap, details, message }) {
-  const { SAME_DAY_ADMIN_ACTIONS } = require('./sameDayDelivery.service');
-  const live = suggested?.totalCharges != null ? Number(suggested.totalCharges) : null;
-  const gap =
-    freightCap != null && live != null && Number.isFinite(live)
-      ? round2(live - Number(freightCap))
-      : null;
-  return {
-    success: false,
-    code: 'SAME_DAY_NO_COURIER_WITHIN_CAP',
-    message:
-      message ||
-      'No Same Day courier is available within the shipping amount the customer already paid. Do not book over cap unless you choose Book anyway (wallet extra). Customer bill is unchanged.',
-    quotedCourier: quoted?.courierId
-      ? { courierId: quoted.courierId, courierName: quoted.courierName }
-      : null,
-    suggestedCourier: suggested,
-    availableCouriers: (available || []).slice(0, 15).map(mapCourierPublic),
-    quotedFreightInr: freightCap,
-    cheapestLiveInr: live,
-    freightGapInr: gap != null && gap > 0 ? gap : 0,
-    adminActions: [
-      SAME_DAY_ADMIN_ACTIONS.HOLD,
-      SAME_DAY_ADMIN_ACTIONS.BOOK_ANYWAY,
-      SAME_DAY_ADMIN_ACTIONS.REFUND_CANCEL
-    ],
-    customerBillUnchanged: true,
-    details: details || null
-  };
-}
-
 /**
  * Assign AWB with production substitute policy. Does not touch customer payment fields.
  *
@@ -267,15 +194,13 @@ function sameDayCapBlockPayload({ quoted, suggested, available, freightCap, deta
  * @param {string} opts.shipmentId
  * @param {number|null} [opts.courierIdOverride]
  * @param {boolean} [opts.confirmSubstitute]
- * @param {boolean} [opts.bookAnyway] Same Day only — allow wallet extra over customer-paid cap
  * @returns {Promise<object>}
  */
 async function runShiprocketAssignAwb(order, opts = {}) {
   const {
     shipmentId,
     courierIdOverride = null,
-    confirmSubstitute = false,
-    bookAnyway = false
+    confirmSubstitute = false
   } = opts;
 
   try {
@@ -300,9 +225,6 @@ async function runShiprocketAssignAwb(order, opts = {}) {
 
     const quoted = quotedCourierFromOrder(order);
     const freightCap = quotedFreightInr(order);
-    const { isSameDayOrder, isRateWithinCustomerCap } = require('./sameDayDelivery.service');
-    const sameDay = isSameDayOrder(order);
-    const allowOverCap = sameDay && bookAnyway === true;
     const hasOverride =
       courierIdOverride != null && Number.isFinite(Number(courierIdOverride)) && Number(courierIdOverride) > 0;
 
@@ -381,194 +303,9 @@ async function runShiprocketAssignAwb(order, opts = {}) {
       return { ok: true, assign, ...meta };
     };
 
-    const liveRateOf = (courierId) => {
-      if (courierId == null) return null;
-      const row = (available || []).find(
-        (c) => Number(getCourierCompanyIdFromRow(c)) === Number(courierId)
-      );
-      if (!row) return null;
-      const n = Number(row.rate ?? row.freight_charge);
-      return Number.isFinite(n) ? round2(n) : null;
-    };
-
-    // ── Same Day: live Quick list + customer-paid cap (never auto over-cap) ─
-    if (sameDay && !hasOverride) {
-      const rates = await ensureRates();
-      if (!rates.ok) {
-        return {
-          success: false,
-          code: rates.code || 'COURIER_LIST_FAILED',
-          message: rates.message || 'Could not load Same Day couriers for this route.',
-          customerBillUnchanged: true
-        };
-      }
-
-      let inCapPick = pickCheapestActiveCourier(available, {
-        codRequired: codRequired(),
-        maxCharge: allowOverCap ? null : freightCap
-      });
-      if (
-        !allowOverCap &&
-        inCapPick &&
-        !isRateWithinCustomerCap(inCapPick.rate, freightCap)
-      ) {
-        inCapPick = null;
-      }
-      const quotedLive = quoted.courierId != null ? liveRateOf(quoted.courierId) : null;
-      const quotedStillOk =
-        quoted.courierId != null &&
-        !isCourierInactive({ id: quoted.courierId, name: quoted.courierName }) &&
-        (allowOverCap ||
-          (quotedLive != null && isRateWithinCustomerCap(quotedLive, freightCap)) ||
-          (quotedLive == null && inCapPick && Number(inCapPick.courierCompanyId) === Number(quoted.courierId)));
-
-      let targetId = null;
-      let courierName = null;
-      let reason = 'same_day_live';
-
-      if (quotedStillOk) {
-        targetId = Number(quoted.courierId);
-        courierName = quoted.courierName;
-        reason = 'quoted';
-      } else if (inCapPick?.courierCompanyId) {
-        targetId = Number(inCapPick.courierCompanyId);
-        courierName = inCapPick.courierName;
-        reason = allowOverCap ? 'book_anyway' : 'same_day_under_cap';
-      }
-
-      if (targetId == null) {
-        const overCapPick = pickCheapestActiveCourier(available, { codRequired: codRequired() });
-        return sameDayCapBlockPayload({
-          quoted,
-          suggested: enrichSuggested(overCapPick, freightCap),
-          available,
-          freightCap,
-          details: null
-        });
-      }
-
-      if (isCourierInactive({ id: targetId, name: courierName })) {
-        const overCapPick = pickCheapestActiveCourier(available, { codRequired: codRequired() });
-        return sameDayCapBlockPayload({
-          quoted,
-          suggested: enrichSuggested(overCapPick, freightCap),
-          available,
-          freightCap,
-          details: null,
-          message: 'Same Day courier is inactive in shipping policy. Hold, refund, or Book anyway with another Quick courier.'
-        });
-      }
-
-      logger.info('[Shiprocket] Same Day assign', {
-        orderId: order.orderId,
-        shipmentId: sid,
-        targetId,
-        courierName,
-        reason,
-        freightCap,
-        allowOverCap
-      });
-
-      const res = await assignTarget(targetId);
-      if (!res.ok) {
-        if (isWalletAssignFailure(res.assign)) {
-          return {
-            success: false,
-            code: 'SHIPROCKET_WALLET_OR_BALANCE',
-            message: res.assign.message,
-            details: res.assign.details || res.assign.raw || null,
-            customerBillUnchanged: true
-          };
-        }
-        const overCapPick = pickCheapestActiveCourier(available, {
-          codRequired: codRequired(),
-          excludeCourierIds: [targetId]
-        });
-        let nextInCap = pickCheapestActiveCourier(available, {
-          codRequired: codRequired(),
-          maxCharge: allowOverCap ? null : freightCap,
-          excludeCourierIds: [targetId]
-        });
-        if (
-          !allowOverCap &&
-          nextInCap &&
-          !isRateWithinCustomerCap(nextInCap.rate, freightCap)
-        ) {
-          nextInCap = null;
-        }
-        if (nextInCap?.courierCompanyId) {
-          const retry = await assignTarget(Number(nextInCap.courierCompanyId));
-          if (retry.ok) {
-            return finishSuccess({
-              assign: retry.assign,
-              courierId: Number(nextInCap.courierCompanyId),
-              courierName: retry.assign.courier || nextInCap.courierName,
-              substituted: true,
-              substituteMeta: {
-                courierAssignNote: buildCourierSubstituteNote({
-                  quotedId: quoted.courierId,
-                  quotedName: quoted.courierName,
-                  assignedId: nextInCap.courierCompanyId,
-                  assignedName: retry.assign.courier || nextInCap.courierName,
-                  reason: 'same_day_retry'
-                }),
-                courierSubstitutedFromId: quoted.courierId,
-                courierSubstitutedFromName: quoted.courierName
-              }
-            });
-          }
-        }
-        return sameDayCapBlockPayload({
-          quoted,
-          suggested: enrichSuggested(overCapPick || nextInCap, freightCap),
-          available,
-          freightCap,
-          details: res.assign.details || res.assign.raw || null,
-          message: res.assign.message || 'Could not assign a Same Day courier within the customer-paid shipping cap.'
-        });
-      }
-
-      const substituted = quoted.courierId == null || Number(targetId) !== Number(quoted.courierId);
-      return finishSuccess({
-        assign: res.assign,
-        courierId: targetId,
-        courierName: res.assign.courier || courierName,
-        substituted,
-        substituteMeta: substituted
-          ? {
-              courierAssignNote: buildCourierSubstituteNote({
-                quotedId: quoted.courierId,
-                quotedName: quoted.courierName,
-                assignedId: targetId,
-                assignedName: res.assign.courier || courierName || String(targetId),
-                reason
-              }),
-              courierSubstitutedFromId: quoted.courierId,
-              courierSubstitutedFromName: quoted.courierName
-            }
-          : null
-      });
-    }
-
     // ── Override (admin picked / confirmed suggested id) ───────────────────
     if (hasOverride) {
       const targetId = Number(courierIdOverride);
-      if (sameDay && !allowOverCap) {
-        await ensureRates();
-        const live = liveRateOf(targetId);
-        if (live == null || !isRateWithinCustomerCap(live, freightCap)) {
-          const overCapPick = pickCheapestActiveCourier(available, { codRequired: codRequired() });
-          return sameDayCapBlockPayload({
-            quoted,
-            suggested: enrichSuggested(overCapPick, freightCap),
-            available,
-            freightCap,
-            details: null,
-            message:
-              'Selected Same Day courier is above the shipping amount the customer paid. Hold, refund, or Book anyway.'
-          });
-        }
-      }
       if (isCourierInactive({ id: targetId })) {
         return {
           success: false,

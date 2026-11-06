@@ -1,14 +1,20 @@
 /**
- * Checkout shipping mode: Standard vs Same Day.
- *
- * Standard is ON by default (legacy docs without the field stay ON).
- * When Standard is OFF, checkout may only confirm Same Day — never a silent
- * fallback to a standard courier.
+ * Checkout shipping mode — standard delivery only.
+ * Same-day / Shiprocket Quick has been removed; any same_day client request is ignored.
  */
 
-const { SHIPPING_SPEEDS, SAME_DAY_REASONS, normalizeShippingSpeed } = require('./sameDayDelivery.service');
-
 const DELIVERY_UNAVAILABLE_CODE = 'DELIVERY_NOT_AVAILABLE';
+
+const SHIPPING_SPEEDS = Object.freeze({
+  STANDARD: 'standard'
+});
+
+/**
+ * Always resolves to standard. Ignores same_day / legacy aliases from clients.
+ */
+function normalizeShippingSpeed(_raw) {
+  return SHIPPING_SPEEDS.STANDARD;
+}
 
 function cloneStandardDelivery(src) {
   return {
@@ -64,74 +70,34 @@ function isStandardDeliveryEnabled(src) {
   return true;
 }
 
-function messageForDeliveryUnavailable(reason) {
-  switch (String(reason || '').trim()) {
-    case SAME_DAY_REASONS.PINCODE_NOT_ALLOWED:
-      return 'Same day delivery is not available for this pincode.';
-    case SAME_DAY_REASONS.BEFORE_OPEN:
-      return 'Same day delivery is not available yet. Please try during shop hours.';
-    case SAME_DAY_REASONS.PAST_CUTOFF:
-      return 'Same day delivery cutoff has passed for today.';
-    case SAME_DAY_REASONS.DISABLED_FOR_STOREFRONT:
-    case SAME_DAY_REASONS.NO_PINCODES_CONFIGURED:
-      return 'Same day delivery is not available, and standard delivery is turned off.';
-    case SAME_DAY_REASONS.NOT_SERVICEABLE:
-    case SAME_DAY_REASONS.NO_QUICK_COURIER:
-    case SAME_DAY_REASONS.COORDS_REQUIRED:
-    case SAME_DAY_REASONS.PICKUP_PIN_MISSING:
-      return 'Same day delivery is not available for this address right now.';
-    case SAME_DAY_REASONS.PROBE_ERROR:
-      return 'Could not verify same day delivery for this address. Please try again.';
-    default:
-      return 'Delivery is not available for this address.';
-  }
+function messageForDeliveryUnavailable(_reason) {
+  return 'Delivery is not available for this address.';
 }
 
 /**
  * Decide which speed checkout may use. Never throws.
+ * Same-day requests are ignored — only standard is offered.
  *
  * @returns {{
  *   ok: boolean,
- *   shippingSpeed: 'standard'|'same_day'|null,
+ *   shippingSpeed: 'standard'|null,
  *   autoSelected: boolean,
  *   code?: string,
  *   reason?: string,
  *   message?: string
  * }}
  */
-function resolveCheckoutShippingChoice({
-  standardEnabled,
-  sameDayOption,
-  requestedSpeed
-} = {}) {
+function resolveCheckoutShippingChoice({ standardEnabled } = {}) {
   const stdOn = standardEnabled !== false;
-  const sameDayOk = sameDayOption != null && sameDayOption.available === true;
-  const requested = normalizeShippingSpeed(requestedSpeed);
-
-  if (requested === SHIPPING_SPEEDS.SAME_DAY && sameDayOk) {
-    return {
-      ok: true,
-      shippingSpeed: SHIPPING_SPEEDS.SAME_DAY,
-      autoSelected: false
-    };
-  }
 
   if (!stdOn) {
-    if (sameDayOk) {
-      return {
-        ok: true,
-        shippingSpeed: SHIPPING_SPEEDS.SAME_DAY,
-        autoSelected: requested !== SHIPPING_SPEEDS.SAME_DAY
-      };
-    }
-    const reason = sameDayOption?.reason || 'delivery_not_available';
     return {
       ok: false,
       shippingSpeed: null,
       autoSelected: false,
       code: DELIVERY_UNAVAILABLE_CODE,
-      reason,
-      message: messageForDeliveryUnavailable(reason)
+      reason: 'delivery_not_available',
+      message: messageForDeliveryUnavailable('delivery_not_available')
     };
   }
 
@@ -144,6 +110,8 @@ function resolveCheckoutShippingChoice({
 
 module.exports = {
   DELIVERY_UNAVAILABLE_CODE,
+  SHIPPING_SPEEDS,
+  normalizeShippingSpeed,
   cloneStandardDelivery,
   toStandardDeliveryPublic,
   normalizeStandardDeliveryAdminInput,

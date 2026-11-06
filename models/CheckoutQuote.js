@@ -18,10 +18,9 @@ const checkoutQuoteSchema = new mongoose.Schema(
 
     shippingSpeed: {
       type: String,
-      enum: ['standard', 'same_day'],
+      enum: ['standard'],
       default: 'standard'
     },
-    sameDayMeta: { type: mongoose.Schema.Types.Mixed, default: null },
 
     shippingMeta: {
       isDeliverable: { type: Boolean, default: false },
@@ -34,7 +33,7 @@ const checkoutQuoteSchema = new mongoose.Schema(
       codAvailable: { type: Boolean, default: true },
       message: { type: String, default: null },
       mock: { type: Boolean, default: false },
-      shippingSpeed: { type: String, enum: ['standard', 'same_day', null], default: null },
+      shippingSpeed: { type: String, enum: ['standard', null], default: null },
       checkoutShippingMethod: { type: String, default: null },
       etaLabel: { type: String, default: null },
       freightInr: { type: Number, default: null },
