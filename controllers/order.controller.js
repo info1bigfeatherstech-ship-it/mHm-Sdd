@@ -79,6 +79,13 @@ const {
     recordOnlinePaymentAttemptFailure,
     isMoneyCapturedPaymentStatus
 } = require('../utils/orderPaymentState');
+const {
+    isSameDayQuote,
+    isSameDayOrder,
+    createSddHttpError
+} = require('../sameDayDelivery/utils/sameDayDeliveryMode');
+const { assertPincodeEligible } = require('../sameDayDelivery/services/sameDayDeliverySettings.service');
+const { SDD_DELIVERY_META } = require('../sameDayDelivery/services/sameDayCheckout.service');
 
 const normalizeDecisionCode = (errorLike, fallback) =>
     String(errorLike?.code || fallback || 'ORDER_FLOW_ERROR').trim().toUpperCase();
@@ -178,6 +185,16 @@ async function applySuccessfulOnlineCaptureSideEffects(order, trigger) {
             trigger,
             message: commitErr?.message || String(commitErr)
         });
+    }
+
+    // Simple same-day (manual warehouse): paid → auto-confirm; never enqueue courier.
+    if (
+        isSameDayOrder(order) &&
+        ['paid', 'partially_paid'].includes(String(order.paymentStatus || '').toLowerCase()) &&
+        String(order.orderStatus || '').toLowerCase() === 'pending'
+    ) {
+        order.orderStatus = 'confirmed';
+        dirty = true;
     }
 
     return { dirty, recovery: recovery.changed ? recovery : null };
@@ -697,6 +714,14 @@ async function markShipmentSyncFailure({ order, error, trigger }) {
 
 async function ensureShipmentForOrder({ order, trigger }) {
     if (!order) return { success: false, code: 'ORDER_REQUIRED', message: 'Order is required.' };
+
+    if (isSameDayOrder(order)) {
+        return {
+            success: false,
+            code: 'SAME_DAY_NO_COURIER',
+            message: 'Same-day orders are fulfilled manually. Use the Same Day Delivery admin tab to ship.'
+        };
+    }
 
     if (!isLegacyAutoFulfillOnCheckout()) {
         const st = String(order.orderStatus || '').toLowerCase();
@@ -1287,6 +1312,25 @@ exports.createOrder = async (req, res) => {
             });
         }
 
+        const sameDayCheckout = isSameDayQuote(quote);
+        if (sameDayCheckout) {
+            if (storefront !== 'ecomm') {
+                throw createSddHttpError(
+                    400,
+                    'SAME_DAY_ECOMM_ONLY',
+                    'Same day delivery is only available on the ecomm store.'
+                );
+            }
+            await assertPincodeEligible(pin);
+            if (normalizedPaymentMethod !== 'online' || confirmedPaymentPlan !== 'full') {
+                throw createSddHttpError(
+                    400,
+                    'SAME_DAY_ONLINE_FULL_ONLY',
+                    'Same day delivery requires full online payment.'
+                );
+            }
+        }
+
         const isAdvanceBalanceCod = isAdvanceBalanceCodCheckout({
             paymentMethod: normalizedPaymentMethod,
             paymentPlan: confirmedPaymentPlan,
@@ -1316,7 +1360,9 @@ exports.createOrder = async (req, res) => {
             });
         }
 
-        const deliveryOverride = {
+        const deliveryOverride = sameDayCheckout
+            ? { charges: 0, meta: { ...SDD_DELIVERY_META } }
+            : {
             charges: Number(quote.deliveryCharges) || 0,
             meta: {
                 estimatedDays: quote.shippingMeta?.estimatedDays || null,
@@ -1588,7 +1634,29 @@ exports.createOrder = async (req, res) => {
                       ? roundMoney2(Number(pricedShip.customerShippingInr))
                       : null
             },
-            shippingWeightSnapshot
+            shippingWeightSnapshot,
+            ...(sameDayCheckout
+                ? {
+                    fulfillmentMode: 'same_day',
+                    sameDay: { pincode: pin },
+                    deliveryCharges: 0,
+                    deliveryFreightInr: 0,
+                    deliveryCodFeeInr: 0,
+                    shippingSnapshot: {
+                        courierName: null,
+                        estimatedDays: null,
+                        courierCompanyId: null,
+                        shipmozoCourierId: null,
+                        provider: null,
+                        pickupsAutomaticallyScheduled: null,
+                        shippingSpeed: null,
+                        checkoutShippingMethod: null,
+                        etaLabel: null,
+                        freightInr: 0,
+                        customerShippingInr: 0
+                    }
+                }
+                : {})
         };
 
         // 9. Persist order under pre-allocated orderId.
@@ -2010,7 +2078,7 @@ exports.verifyPayment = async (req, res) => {
             (order.paymentStatus === 'paid' ||
                 (String(order.paymentInfo?.balanceCollectionMethod || '') === 'cod' &&
                     order.paymentStatus === 'partially_paid'));
-        if (shouldEnqueueShipmentAfterVerify) {
+        if (shouldEnqueueShipmentAfterVerify && !isSameDayOrder(order)) {
             ensureShipmentForOrder({
                 order,
                 trigger: 'payment_verified'
@@ -2156,7 +2224,7 @@ exports.razorpayWebhook = async (req, res) => {
                     (order.paymentStatus === 'paid' ||
                         (String(order.paymentInfo?.balanceCollectionMethod || '') === 'cod' &&
                             order.paymentStatus === 'partially_paid'));
-                if (shouldEnqueueShipmentAfterWebhook) {
+                if (shouldEnqueueShipmentAfterWebhook && !isSameDayOrder(order)) {
                     ensureShipmentForOrder({
                         order,
                         trigger: 'razorpay_webhook_payment_captured'
@@ -3291,6 +3359,15 @@ exports.updateOrderStatus = async (req, res) => {
         const order = await Order.findOne(mergeAdminOrderFilter(req, { orderId }));
         if (!order) {
             return respondOrderError(res, 404, 'ORDER_NOT_FOUND', 'Order not found');
+        }
+
+        if (isSameDayOrder(order)) {
+            return respondOrderError(
+                res,
+                400,
+                'SAME_DAY_USE_SDD_ACTIONS',
+                'Same-day orders must be shipped or cancelled from the Same Day Delivery admin tab.'
+            );
         }
 
         order.orderStatus = status;

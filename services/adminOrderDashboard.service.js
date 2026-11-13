@@ -27,6 +27,7 @@ const {
 const { evaluateOrderPaymentForShiprocketFulfillment } = require('../utils/orderFulfillmentPaymentGate');
 const { buildListRowFulfillmentUi } = require('../utils/adminOrderListFulfillmentUi');
 const { resolveOrderShippingProvider } = require('../constants/shippingProviders');
+const { buildSameDayExclusion } = require('../sameDayDelivery/constants/sameDayDeliveryOrderQuery');
 
 const MAX_RANGE_MS = 366 * 24 * 60 * 60 * 1000;
 const DEFAULT_RANGE_DAYS = 30;
@@ -227,14 +228,18 @@ function andFilters(...parts) {
  */
 function buildBucketMatch(bucket) {
   const b = String(bucket || 'all').toLowerCase();
+  const sddExclude = buildSameDayExclusion();
   if (b === 'all') {
-    return { orderStatus: { $nin: ALL_TAB_EXCLUDED_ORDER_STATUSES } };
+    return andFilters(
+      { orderStatus: { $nin: ALL_TAB_EXCLUDED_ORDER_STATUSES } },
+      sddExclude
+    );
   }
   if (b === 'rto') {
-    return buildRtoBucketMatch();
+    return andFilters(buildRtoBucketMatch(), sddExclude);
   }
   if (b === 'pickup_exception') {
-    return buildPickupExceptionBucketMatch();
+    return andFilters(buildPickupExceptionBucketMatch(), sddExclude);
   }
   if (b === 'in_transit') {
     const ndrProviderMatch = { $regex: NDR_UNDELIVERED_PROVIDER_STATUS_REGEX, $options: 'i' };
@@ -246,21 +251,24 @@ function buildBucketMatch(bucket) {
         ]
       },
       buildRtoExclusionForNonRtoBucket(b),
-      buildPickupExceptionExclusionForNonExceptionBucket(b)
+      buildPickupExceptionExclusionForNonExceptionBucket(b),
+      sddExclude
     );
   }
   if (b === 'ready_to_pick') {
     return andFilters(
       processingTabMongoMatch(),
       buildRtoExclusionForNonRtoBucket(b),
-      buildPickupExceptionExclusionForNonExceptionBucket(b)
+      buildPickupExceptionExclusionForNonExceptionBucket(b),
+      sddExclude
     );
   }
   if (b === 'ready_to_ship') {
     return andFilters(
       readyToShipTabMongoMatch(),
       buildRtoExclusionForNonRtoBucket(b),
-      buildPickupExceptionExclusionForNonExceptionBucket(b)
+      buildPickupExceptionExclusionForNonExceptionBucket(b),
+      sddExclude
     );
   }
   const statuses = BUCKET_TO_ORDER_STATUSES[/** @type {keyof typeof BUCKET_TO_ORDER_STATUSES} */ (b)];
@@ -274,7 +282,8 @@ function buildBucketMatch(bucket) {
   return andFilters(
     statusMatch,
     buildRtoExclusionForNonRtoBucket(b),
-    buildPickupExceptionExclusionForNonExceptionBucket(b)
+    buildPickupExceptionExclusionForNonExceptionBucket(b),
+    sddExclude
   );
 }
 
@@ -298,6 +307,8 @@ function mergeFilters(base, search, bucket) {
  */
 async function aggregateSummary(from, to, scopeMatch = {}) {
   const baseMatch = buildScopedDateMatch(from, to, scopeMatch);
+  const sddExclude = buildSameDayExclusion();
+  const notSameDay = { $ne: ['$fulfillmentMode', 'same_day'] };
 
   const [row] = await Order.aggregate([
     { $match: baseMatch },
@@ -310,18 +321,37 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
               totalOrders: {
                 $sum: {
                   $cond: [
-                    { $not: { $in: ['$orderStatus', ALL_TAB_EXCLUDED_ORDER_STATUSES] } },
+                    {
+                      $and: [
+                        { $not: { $in: ['$orderStatus', ALL_TAB_EXCLUDED_ORDER_STATUSES] } },
+                        notSameDay
+                      ]
+                    },
                     1,
                     0
                   ]
                 }
               },
               totalCompletedOrders: {
-                $sum: { $cond: [{ $eq: ['$orderStatus', 'delivered'] }, 1, 0] }
+                $sum: {
+                  $cond: [
+                    {
+                      $and: [{ $eq: ['$orderStatus', 'delivered'] }, notSameDay]
+                    },
+                    1,
+                    0
+                  ]
+                }
               },
               totalPendingOrders: {
                 $sum: {
-                  $cond: [{ $in: ['$orderStatus', PIPELINE_ORDER_STATUSES] }, 1, 0]
+                  $cond: [
+                    {
+                      $and: [{ $in: ['$orderStatus', PIPELINE_ORDER_STATUSES] }, notSameDay]
+                    },
+                    1,
+                    0
+                  ]
                 }
               },
               totalRevenueInr: {
@@ -330,7 +360,8 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
                     {
                       $and: [
                         { $not: { $in: ['$orderStatus', GMV_EXCLUDED_ORDER_STATUSES] } },
-                        { $ne: ['$paymentStatus', 'failed'] }
+                        { $ne: ['$paymentStatus', 'failed'] },
+                        notSameDay
                       ]
                     },
                     '$totalAmount',
@@ -341,7 +372,10 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
             }
           }
         ],
-        byStatus: [{ $group: { _id: '$orderStatus', count: { $sum: 1 } } }]
+        byStatus: [
+          { $match: sddExclude },
+          { $group: { _id: '$orderStatus', count: { $sum: 1 } } }
+        ]
       }
     }
   ]).exec();
@@ -367,25 +401,25 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
     readyToShipCount,
     confirmedWithoutPickupExceptionCount
   ] = await Promise.all([
-    Order.countDocuments({ $and: [baseMatch, buildRtoBucketMatch()] }),
-    Order.countDocuments({ $and: [baseMatch, buildPickupExceptionBucketMatch()] }),
-    Order.countDocuments({
-      $and: [baseMatch, { orderStatus: 'cancelled', 'shipmentInfo.providerStatus': rtoProviderMatch }]
-    }),
-    Order.countDocuments({
-      $and: [baseMatch, { orderStatus: 'delivered', 'shipmentInfo.providerStatus': rtoProviderMatch }]
-    }),
-    Order.countDocuments({
-      $and: [baseMatch, { orderStatus: 'delivered', 'shipmentInfo.providerStatus': ndrProviderMatch }]
-    }),
+    Order.countDocuments(andFilters(baseMatch, buildRtoBucketMatch(), sddExclude)),
+    Order.countDocuments(andFilters(baseMatch, buildPickupExceptionBucketMatch(), sddExclude)),
     Order.countDocuments(
-      andFilters(baseMatch, processingTabMongoMatch(), pickupExceptionExclude)
+      andFilters(baseMatch, { orderStatus: 'cancelled', 'shipmentInfo.providerStatus': rtoProviderMatch }, sddExclude)
     ),
     Order.countDocuments(
-      andFilters(baseMatch, readyToShipTabMongoMatch(), pickupExceptionExclude)
+      andFilters(baseMatch, { orderStatus: 'delivered', 'shipmentInfo.providerStatus': rtoProviderMatch }, sddExclude)
     ),
     Order.countDocuments(
-      andFilters(baseMatch, { orderStatus: 'confirmed' }, confirmedPickupExceptionExclude)
+      andFilters(baseMatch, { orderStatus: 'delivered', 'shipmentInfo.providerStatus': ndrProviderMatch }, sddExclude)
+    ),
+    Order.countDocuments(
+      andFilters(baseMatch, processingTabMongoMatch(), pickupExceptionExclude, sddExclude)
+    ),
+    Order.countDocuments(
+      andFilters(baseMatch, readyToShipTabMongoMatch(), pickupExceptionExclude, sddExclude)
+    ),
+    Order.countDocuments(
+      andFilters(baseMatch, { orderStatus: 'confirmed' }, confirmedPickupExceptionExclude, sddExclude)
     )
   ]);
 

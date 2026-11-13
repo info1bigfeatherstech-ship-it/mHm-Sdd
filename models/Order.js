@@ -80,12 +80,32 @@ const orderSchema = new mongoose.Schema(
 
     /**
      * Checkout speed choice. Only standard shipping is supported.
+     * (Shiprocket Quick / shippingSpeed same_day is intentionally not used.)
      */
     shippingSpeed: {
       type: String,
       enum: ['standard'],
       default: 'standard',
       index: true
+    },
+
+    /**
+     * Fulfillment path. `same_day` = manual warehouse (no courier booking).
+     * null/courier = standard courier pipeline; self_pickup reserved.
+     */
+    fulfillmentMode: {
+      type: String,
+      enum: ['courier', 'self_pickup', 'same_day', null],
+      default: null,
+      index: true
+    },
+
+    sameDay: {
+      pincode: { type: String, default: null },
+      shippedAt: { type: Date, default: null },
+      shippedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      cancelledAt: { type: Date, default: null },
+      cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
     },
     
     orderStatus: {
@@ -458,5 +478,6 @@ orderSchema.pre('save', async function () {
 orderSchema.index({ userId: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1, orderStatus: 1 });
 orderSchema.index({ storefront: 1, shippingSpeed: 1, createdAt: -1 });
+orderSchema.index({ storefront: 1, fulfillmentMode: 1, orderStatus: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Order', orderSchema);

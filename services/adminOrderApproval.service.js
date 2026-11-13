@@ -128,6 +128,17 @@ async function runAdminApproveOrderSingle(orderId, opts = {}) {
       return { orderId: id, success: false, skipped: false, code: 'ORDER_NOT_FOUND', message: 'Order not found' };
     }
 
+    if (String(order.fulfillmentMode || '').toLowerCase() === 'same_day') {
+      return {
+        orderId: id,
+        success: false,
+        skipped: false,
+        code: 'SAME_DAY_NO_COURIER_ACCEPT',
+        message:
+          'Same-day orders are not accepted through courier fulfilment. Use the Same Day Delivery tab to ship or cancel.'
+      };
+    }
+
     const status = String(order.orderStatus || '').toLowerCase();
     if (status === 'confirmed') {
       return {
@@ -251,6 +262,19 @@ async function runAdminCancelOrderSingle(orderId, opts = {}) {
       await session.abortTransaction();
       session.endSession();
       return { orderId: id, success: false, skipped: false, code: 'ORDER_NOT_FOUND', message: 'Order not found' };
+    }
+
+    if (String(order.fulfillmentMode || '').toLowerCase() === 'same_day') {
+      await session.abortTransaction();
+      session.endSession();
+      return {
+        orderId: id,
+        success: false,
+        skipped: false,
+        code: 'SAME_DAY_USE_SDD_CANCEL',
+        message:
+          'Same-day orders must be cancelled from the Same Day Delivery tab (includes refund handling).'
+      };
     }
 
     const status = String(order.orderStatus || '').toLowerCase();

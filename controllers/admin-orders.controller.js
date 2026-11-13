@@ -13,6 +13,152 @@ const {
   mapOrderRow
 } = require('../services/adminOrderDashboard.service');
 const { autoSyncStaleOrdersInRange } = require('../services/adminOrderAutoSync.service');
+const { mergeOrderScopeFilter, getAdminOrderMatch } = require('../utils/adminOrderScope');
+const { evaluateOrderPaymentForShiprocketFulfillment } = require('../utils/orderFulfillmentPaymentGate');
+const {
+  buildShippingWeightSnapshotFromOrderItems,
+  enrichShippingWeightSnapshotDims
+} = require('../utils/shippingWeightSnapshot');
+const { resolveOrderShippingProvider } = require('../constants/shippingProviders');
+
+/**
+ * Map order items for admin detail UI (product name / thumbnail / lineTotal).
+ * @param {object} orderDoc lean or mongoose doc.toObject()
+ */
+function mapAdminDetailItems(orderDoc) {
+  return (orderDoc.items || []).map((item) => {
+    const product = item.productId && typeof item.productId === 'object' ? item.productId : null;
+    const variant = product?.variants?.find((v) => String(v._id) === String(item.variantId));
+    const firstImg = Array.isArray(variant?.images)
+      ? variant.images[0]
+      : Array.isArray(product?.images)
+        ? product.images[0]
+        : null;
+    const thumbnailUrl =
+      typeof firstImg === 'string'
+        ? firstImg
+        : firstImg && typeof firstImg === 'object'
+          ? firstImg.url || firstImg.secure_url
+          : null;
+
+    return {
+      ...item,
+      sku: item.sku || item.productCode || variant?.sku || null,
+      productCode: item.productCode || variant?.sku || null,
+      thumbnailUrl,
+      lineTotal: Number(item.priceSnapshot?.total) || 0,
+      productId: product
+        ? {
+            _id: product._id,
+            name: product.name,
+            slug: product.slug,
+            images: variant?.images || product.images || []
+          }
+        : item.productId
+    };
+  });
+}
+
+/**
+ * Build admin-facing order detail payload (full fields for Ops UI).
+ * @param {import('mongoose').Document} order
+ */
+async function buildAdminOrderDetailPayload(order) {
+  const transformed = order.toObject ? order.toObject() : { ...order };
+  transformed.items = mapAdminDetailItems(transformed);
+  transformed.shippingProvider = resolveOrderShippingProvider(transformed);
+
+  // Prefer frozen snapshot; fall back to populated Address doc when snapshot missing.
+  if (
+    (!transformed.addressSnapshot || typeof transformed.addressSnapshot !== 'object') &&
+    transformed.address &&
+    typeof transformed.address === 'object'
+  ) {
+    const a = transformed.address;
+    transformed.addressSnapshot = {
+      fullName: a.fullName || a.name || null,
+      phone: a.phone || null,
+      houseNumber: a.houseNumber || null,
+      building: a.building || null,
+      floor: a.floor || a.floorNo || null,
+      addressLine1: a.addressLine1 || a.streetLine1 || null,
+      addressLine2: a.addressLine2 || a.streetLine2 || null,
+      area: a.area || a.areaLocality || null,
+      landmark: a.landmark || null,
+      city: a.city || null,
+      state: a.state || null,
+      postalCode: a.postalCode || a.pincode || null,
+      country: a.country || 'India'
+    };
+  }
+
+  if (transformed.userId && typeof transformed.userId === 'object') {
+    transformed.customer = {
+      name: transformed.userId.name || null,
+      email: transformed.userId.email || null,
+      phone: transformed.userId.phone || null
+    };
+    transformed.contactPhone =
+      transformed.addressSnapshot?.phone ||
+      transformed.userId.phone ||
+      transformed.contactPhone ||
+      null;
+    transformed.userId = transformed.userId._id;
+  } else {
+    transformed.customer = transformed.customer || {
+      name: transformed.addressSnapshot?.fullName || transformed.addressSnapshot?.name || null,
+      email: null,
+      phone: transformed.addressSnapshot?.phone || null
+    };
+    transformed.contactPhone =
+      transformed.addressSnapshot?.phone || transformed.customer?.phone || null;
+  }
+
+  transformed.paymentMethod =
+    transformed.paymentInfo?.method || transformed.paymentMethod || null;
+
+  let snap = transformed.shippingWeightSnapshot;
+  if (!snap?.lines?.length && Array.isArray(order.items) && order.items.length) {
+    try {
+      const fallback = await buildShippingWeightSnapshotFromOrderItems(order);
+      if (fallback) {
+        snap = fallback;
+        transformed.shippingWeightSnapshot = fallback;
+      }
+    } catch (err) {
+      logger.warn('[admin-orders] weight snapshot fallback skipped', {
+        orderId: transformed.orderId,
+        message: err?.message || String(err)
+      });
+    }
+  }
+  if (snap?.lines?.length) {
+    try {
+      transformed.shippingWeightSnapshot = await enrichShippingWeightSnapshotDims(snap);
+    } catch (err) {
+      logger.warn('[admin-orders] weight snapshot enrich skipped', {
+        orderId: transformed.orderId,
+        message: err?.message || String(err)
+      });
+    }
+  }
+
+  const fulfillmentPaymentGate = evaluateOrderPaymentForShiprocketFulfillment(order);
+  try {
+    const { buildShipmentOpsView } = require('../services/shipmentOps');
+    transformed.shipmentOps = buildShipmentOpsView(order, {
+      fulfillmentPaymentGate,
+      source: 'admin_order_detail'
+    });
+  } catch (opsErr) {
+    logger.warn('[admin-orders] shipmentOps view skipped', {
+      orderId: transformed.orderId,
+      message: opsErr?.message || String(opsErr)
+    });
+  }
+
+  return { order: transformed, fulfillmentPaymentGate };
+}
 
 function sendError(res, err, fallbackMessage) {
   const status = err.statusCode && Number.isFinite(err.statusCode) ? err.statusCode : 500;
@@ -296,5 +442,55 @@ exports.autoSyncOrderStatuses = async (req, res) => {
     });
   } catch (err) {
     return sendError(res, err, 'Could not auto-sync order statuses');
+  }
+};
+
+/**
+ * GET /api/admin/orders/:orderId
+ * Full order detail for admin Ops UI (customer, addressSnapshot, items, paymentInfo).
+ * Scoped by admin storefront. Does not change list/summary behaviour.
+ */
+exports.getOrderDetail = async (req, res) => {
+  try {
+    const orderId = String(req.params.orderId || '')
+      .replace(/^#/, '')
+      .trim();
+    if (!orderId) {
+      const err = new Error('orderId is required');
+      err.statusCode = 400;
+      err.code = 'ORDER_ID_REQUIRED';
+      throw err;
+    }
+
+    const filter = mergeOrderScopeFilter({ orderId }, getAdminOrderMatch(req));
+    const order = await Order.findOne(filter)
+      .populate('items.productId', 'name slug images variants')
+      .populate('userId', 'name email phone')
+      .populate('address');
+
+    if (!order) {
+      const err = new Error('Order not found');
+      err.statusCode = 404;
+      err.code = 'ORDER_NOT_FOUND';
+      throw err;
+    }
+
+    const { order: detail, fulfillmentPaymentGate } = await buildAdminOrderDetailPayload(order);
+
+    return res.json({
+      success: true,
+      data: {
+        order: detail,
+        fulfillmentPaymentGate: fulfillmentPaymentGate?.ok
+          ? { ok: true, reason: fulfillmentPaymentGate.reason }
+          : {
+              ok: false,
+              code: fulfillmentPaymentGate?.code || null,
+              message: fulfillmentPaymentGate?.message || null
+            }
+      }
+    });
+  } catch (err) {
+    return sendError(res, err, 'Could not load order detail');
   }
 };

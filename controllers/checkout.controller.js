@@ -40,6 +40,8 @@ const {
 const {
   isStandardDeliveryEnabledForStorefront
 } = require('../services/shippingProviderSettings.service');
+const { parseDeliveryMode } = require('../sameDayDelivery/utils/sameDayDeliveryMode');
+const sameDayPublic = require('../sameDayDelivery/controllers/sameDayDelivery.public.controller');
 const logger = require('../utils/logger');
 
 const QUOTE_TTL_MS = 15 * 60 * 1000;
@@ -268,6 +270,19 @@ async function buildFinalTotals({
  * POST /api/checkout/quote
  */
 exports.quoteCheckout = async (req, res) => {
+  const requestedMode = parseDeliveryMode(req.body?.deliveryMode);
+  if (requestedMode === null) {
+    return respondCheckoutInputError(
+      res,
+      400,
+      'INVALID_DELIVERY_MODE',
+      'deliveryMode must be standard or same_day'
+    );
+  }
+  if (requestedMode === 'same_day') {
+    return sameDayPublic.quoteSameDay(req, res);
+  }
+
   try {
     const userId = req.userId;
     const storefront = req.storefront || 'ecomm';
@@ -281,7 +296,6 @@ exports.quoteCheckout = async (req, res) => {
       balanceCollection,
       quotePurpose
     } = req.body || {};
-    // same_day client requests are ignored — always standard
     const isComparisonQuote = String(quotePurpose || '').toLowerCase() === 'cod_comparison';
 
     const checkoutPolicy = await checkoutSettingsService.getPolicyForStorefront(storefront);
@@ -552,6 +566,7 @@ exports.quoteCheckout = async (req, res) => {
         etaLabel: finalTotals.deliveryMeta?.etaLabel || null
       },
       shippingSpeed: resolvedShippingSpeed,
+      deliveryMode: 'standard',
       totalWeightKg: finalTotals.totalWeight,
       dims: finalTotals.dims,
       status: 'active',
@@ -622,6 +637,22 @@ exports.quoteCheckout = async (req, res) => {
  */
 exports.confirmCheckout = async (req, res) => {
   try {
+    const quoteIdPeek = req.body?.quoteId;
+    if (quoteIdPeek && mongoose.Types.ObjectId.isValid(String(quoteIdPeek))) {
+      const peeked = await CheckoutQuote.findOne({ _id: quoteIdPeek, userId: req.userId })
+        .select('deliveryMode')
+        .lean();
+      if (peeked && String(peeked.deliveryMode || '') === 'same_day') {
+        return sameDayPublic.confirmSameDay(req, res);
+      }
+    }
+  } catch (peekErr) {
+    logger.warn('confirmCheckout same-day peek failed; continuing standard path', {
+      message: peekErr.message
+    });
+  }
+
+  try {
     const userId = req.userId;
     const storefront = req.storefront || 'ecomm';
     const finalUserType = pricingUserTypeForStorefront(storefront);
@@ -691,6 +722,9 @@ exports.confirmCheckout = async (req, res) => {
     const quote = await CheckoutQuote.findOne({ _id: quoteId, userId, status: 'active' });
     if (!quote) {
       return respondCheckoutInputError(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found or inactive');
+    }
+    if (String(quote.deliveryMode || '') === 'same_day') {
+      return sameDayPublic.confirmSameDay(req, res);
     }
 
     if (quote.quoteExpiresAt.getTime() <= Date.now()) {

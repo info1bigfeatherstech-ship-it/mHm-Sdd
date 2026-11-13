@@ -15,5 +15,7 @@ router.use(requireStrictAdminStorefrontScope);
 router.get('/summary', adminOrdersController.getDashboardSummary);
 router.post('/auto-sync-statuses', adminOrdersController.autoSyncOrderStatuses);
 router.get('/', adminOrdersController.getOrdersList);
+/** Full detail — must stay after /summary so "summary" is never treated as orderId. */
+router.get('/:orderId', adminOrdersController.getOrderDetail);
 
 module.exports = router;

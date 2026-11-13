@@ -78,6 +78,8 @@ const productReviewPublicRoutes = require('./routes/product-review.public.route'
 const productReviewUserRoutes = require('./routes/product-review.user.route');
 const adminProductReviewRoutes = require('./routes/admin-product-review.route');
 const pushRoutes = require('./routes/push.route');
+const sameDayPublicRoutes = require('./sameDayDelivery/routes/sameDayDelivery.public.route');
+const sameDayAdminRoutes = require('./sameDayDelivery/routes/sameDayDelivery.admin.route');
 
 // ============================================================================
 // Configuration
@@ -520,6 +522,9 @@ app.use('/api/addresses', limiters.write);
 app.use('/api/delivery', limiters.write);
 app.use('/api/checkout/quote', limiters.checkoutQuote);
 app.use('/api/checkout/confirm', limiters.checkoutConfirm);
+app.use('/api/same-day-delivery/quote', limiters.checkoutQuote);
+app.use('/api/same-day-delivery/confirm', limiters.checkoutConfirm);
+app.use('/api/same-day-delivery', limiters.write);
 app.use('/api/coupons', limiters.couponWrite);
 
 app.use('/api/auth/login', limiters.sensitive);
@@ -746,6 +751,8 @@ app.get('/api', (req, res) => {
       adminAnalytics: '/api/admin/analytics',
       adminSeoAnalytics: '/api/admin/seo-analytics',
       adminOrders: '/api/admin/orders',
+      adminSameDayDelivery: '/api/admin/same-day-delivery',
+      sameDayDelivery: '/api/same-day-delivery',
       publicRazorpayKey: '/api/public/razorpay-key',
       orders: '/api/orders',
       checkout: '/api/checkout',
@@ -773,12 +780,14 @@ app.use('/api/addresses', addressRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
 app.use('/api/admin/seo-analytics', seoAnalyticsRoutes);
 app.use('/api/admin/orders', adminOrdersRoutes);
+app.use('/api/admin/same-day-delivery', sameDayAdminRoutes);
 app.use('/api/admin/rto', adminRtoRoutes);
 app.use('/api/admin/oos-inquiries', adminOosInquiryRoutes);
 app.use('/api/admin/gift-enquiries', adminGiftEnquiryRoutes);
 app.use('/api/admin/staff', staffRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/checkout', checkoutRoutes);
+app.use('/api/same-day-delivery', sameDayPublicRoutes);
 app.use('/api/shipping-provider', shippingProviderRoutes);
 app.use('/api/delivery', deliveryRoutes);
 app.use('/api/admin/coupons', adminCouponRoutes);

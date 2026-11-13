@@ -22,6 +22,14 @@ const checkoutQuoteSchema = new mongoose.Schema(
       default: 'standard'
     },
 
+    /** Checkout delivery path: standard courier vs manual same-day warehouse. */
+    deliveryMode: {
+      type: String,
+      enum: ['standard', 'same_day'],
+      default: 'standard',
+      index: true
+    },
+
     shippingMeta: {
       isDeliverable: { type: Boolean, default: false },
       estimatedDays: { type: String, default: null },
