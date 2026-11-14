@@ -31,6 +31,7 @@ router.post('/orders/quote', ...panel, orders.quoteOrder);
 router.post('/orders', ...panel, orders.createOrder);
 router.post('/orders/verify-payment', ...panel, orders.verifyPayment);
 router.get('/orders', ...panel, orders.listOrders);
+router.get('/orders/:orderId/shipping-label', ...panel, orders.downloadCustomShippingLabel);
 router.get('/orders/:orderId', ...panel, orders.getOrder);
 
 module.exports = router;

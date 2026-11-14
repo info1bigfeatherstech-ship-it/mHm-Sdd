@@ -613,7 +613,7 @@ exports.listOrders = async (req, res) => {
         .skip(skip)
         .limit(limit)
         .select(
-          'orderId orderStatus paymentStatus totalAmount subtotal deliveryCharges createdAt dropshipMeta paymentHoldExpiresAt amountPaidInr balanceDueInr items'
+          'orderId orderStatus paymentStatus totalAmount subtotal deliveryCharges createdAt dropshipMeta paymentHoldExpiresAt amountPaidInr balanceDueInr items shipmentInfo shippingProvider'
         )
         .lean()
     ]);
@@ -649,5 +649,81 @@ exports.getOrder = async (req, res) => {
     return ok(res, { order, data: order });
   } catch (error) {
     return fail(res, 500, 'ORDER_GET_FAILED', error.message || 'Failed to load order');
+  }
+};
+
+/**
+ * GET /orders/:orderId/shipping-label
+ * Dropshipper panel: custom 4×6 label only (dropship settings — never provider choice).
+ */
+exports.downloadCustomShippingLabel = async (req, res) => {
+  try {
+    const ds = req.dropshipper;
+    if (!ds) {
+      return fail(res, 401, 'DROPSHIPPER_AUTH_REQUIRED', 'Not authenticated');
+    }
+
+    const orderId = String(req.params.orderId || '').trim();
+    if (!orderId) {
+      return fail(res, 400, 'ORDER_ID_REQUIRED', 'orderId is required');
+    }
+
+    const order = await Order.findOne({ orderId, storefront: 'dropship' });
+    if (!order || !ownershipOk(order, ds._id)) {
+      return fail(res, 404, 'ORDER_NOT_FOUND', 'Order not found');
+    }
+
+    const awb = String(order.shipmentInfo?.awbCode || order.shipmentInfo?.trackingNumber || '').trim();
+    if (!awb) {
+      return fail(
+        res,
+        400,
+        'AWB_REQUIRED',
+        'Shipping label is not ready yet. Wait until the order is shipped with an AWB.'
+      );
+    }
+
+    const shipmozoLabelSettingsService = require('../../services/shipmozoLabelSettings.service');
+    const { buildLabelViewModel } = require('../../services/shipmozoLabelViewModel.service');
+    const { renderLabelPdf } = require('../../services/shipmozoLabelPdf.service');
+    const logger = require('../../utils/logger');
+
+    // Always dropship config — never ecomm/wholesale mix.
+    const saved = await shipmozoLabelSettingsService.getPublicSettings('dropship');
+    const vm = await buildLabelViewModel(order, saved.settings);
+    const pdfBuf = await renderLabelPdf(vm);
+    if (!pdfBuf || !Buffer.isBuffer(pdfBuf) || pdfBuf.length < 80) {
+      logger.error('dropshipper custom label empty', { orderId, dropshipperId: String(ds._id) });
+      return fail(res, 502, 'CUSTOM_LABEL_EMPTY', 'Could not generate shipping label. Please try again later.');
+    }
+
+    try {
+      order.shipmentInfo = {
+        ...(order.shipmentInfo || {}),
+        labelDownloaded: true,
+        fulfillmentLabelAwb: awb
+      };
+      order.markModified('shipmentInfo');
+      await order.save();
+    } catch (persistErr) {
+      logger.warn('dropshipper labelDownloaded persist failed', {
+        orderId,
+        message: persistErr?.message
+      });
+    }
+
+    const safe = String(order.orderId || 'order').replace(/[^\w.-]+/g, '_').slice(0, 80);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Custom-label-${safe}.pdf"`);
+    res.setHeader('X-Label-Source', 'custom');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Type, X-Label-Source');
+    return res.status(200).send(pdfBuf);
+  } catch (error) {
+    const logger = require('../../utils/logger');
+    logger.error('downloadCustomShippingLabel failed', {
+      message: error?.message,
+      stack: error?.stack
+    });
+    return fail(res, 500, 'LABEL_DOWNLOAD_FAILED', error.message || 'Failed to download shipping label');
   }
 };

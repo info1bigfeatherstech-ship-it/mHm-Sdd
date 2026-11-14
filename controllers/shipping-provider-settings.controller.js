@@ -112,21 +112,27 @@ exports.testShipmozoConnection = async (req, res) => {
 };
 
 function resolveSettingsStorefront(req) {
-  if (req.adminScope?.storefront === 'wholesale' || req.adminScope?.storefront === 'ecomm') {
-    return req.adminScope.storefront;
+  const fromScope = String(req.adminScope?.storefront || '').toLowerCase().trim();
+  if (fromScope === 'ecomm' || fromScope === 'wholesale' || fromScope === 'dropship') {
+    return fromScope;
   }
-  return req.storefront === 'wholesale' ? 'wholesale' : 'ecomm';
+  const fromReq = String(req.storefront || '').toLowerCase().trim();
+  if (fromReq === 'wholesale') return 'wholesale';
+  if (fromReq === 'dropship') return 'dropship';
+  return 'ecomm';
 }
 
 /**
  * GET /api/shipping-provider/admin/shipmozo-label-settings
- * Storefront-scoped: ecomm panel ↔ ecomm settings, wholesale panel ↔ wholesale settings.
+ * Storefront-scoped via x-storefront:
+ * ecomm | wholesale | dropship (each has independent custom-label config).
  */
 exports.getShipmozoLabelSettings = async (req, res) => {
   try {
     const storefront = resolveSettingsStorefront(req);
     const data = await shipmozoLabelSettingsService.getPublicSettings(storefront);
-    const pickup = await resolvePickupWarehouse(storefront, data.settings?.pickup?.sellerName);
+    const warehouseSf = shipmozoLabelSettingsService.resolveWarehouseStorefront(storefront);
+    const pickup = await resolvePickupWarehouse(warehouseSf, data.settings?.pickup?.sellerName);
     data.pickupIdentity = {
       name: pickup?.name || '',
       source: pickup?.source || 'env'
@@ -146,14 +152,15 @@ exports.updateShipmozoLabelSettings = async (req, res) => {
     const storefront = resolveSettingsStorefront(req);
     const patch = req.body?.settings && typeof req.body.settings === 'object' ? req.body.settings : req.body;
     const data = await shipmozoLabelSettingsService.saveSettings(storefront, patch, req.userId || null);
-    const pickup = await resolvePickupWarehouse(storefront, data.settings?.pickup?.sellerName);
+    const warehouseSf = shipmozoLabelSettingsService.resolveWarehouseStorefront(storefront);
+    const pickup = await resolvePickupWarehouse(warehouseSf, data.settings?.pickup?.sellerName);
     data.pickupIdentity = {
       name: pickup?.name || '',
       source: pickup?.source || 'env'
     };
     return res.json({
       success: true,
-      message: 'Shipmozo label settings saved for this storefront',
+      message: `Custom label settings saved for ${storefront}`,
       data
     });
   } catch (error) {
@@ -176,7 +183,8 @@ exports.previewShipmozoLabelSettings = async (req, res) => {
     );
     const vm = buildSampleViewModel(settings, storefront);
     try {
-      const pickup = await resolvePickupWarehouse(storefront, settings.pickup?.sellerName);
+      const warehouseSf = shipmozoLabelSettingsService.resolveWarehouseStorefront(storefront);
+      const pickup = await resolvePickupWarehouse(warehouseSf, settings.pickup?.sellerName);
       if (pickup?.name) {
         vm.pickup = { ...vm.pickup, ...pickup };
         vm.rto = vm.pickup;

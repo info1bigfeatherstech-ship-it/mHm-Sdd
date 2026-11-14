@@ -1,6 +1,6 @@
   /**
- * Render Shipmozo 4×6 shipping label as PDF (288×432 pt) and preview HTML.
- * Visual layout matches Shiprocket standard label: stacked bands, not cramped cells.
+ * Render custom 4×6 shipping label as PDF (288×432 pt) and preview HTML.
+ * Provider-agnostic layout (no courier brand names in static copy).
  */
 
 const PDFDocument = require('pdfkit');
@@ -167,7 +167,7 @@ function computeTableLayout(vm, s, shipH, band2H = 90, band3H = 70) {
       headerH: 13,
       rowH: 13,
       totalsH: 22,
-      notesH: notesShown ? 24 : 0,
+      notesH: notesShown ? 34 : 0,
       footH: footShown ? 9 : 0,
       metaFont: 7,
       valueFont: 7,
@@ -182,7 +182,7 @@ function computeTableLayout(vm, s, shipH, band2H = 90, band3H = 70) {
       headerH: 13,
       rowH: 12,
       totalsH: 22,
-      notesH: notesShown ? 22 : 0,
+      notesH: notesShown ? 30 : 0,
       footH: footShown ? 8 : 0,
       metaFont: 6.5,
       valueFont: 6.5,
@@ -311,7 +311,7 @@ async function renderLabelPdf(vm) {
         size: [PAGE_W, PAGE_H],
         margin: 0,
         autoFirstPage: true,
-        info: { Title: `Shipmozo label ${vm.orderId || vm.awb || ''}`.trim() }
+        info: { Title: `Shipping label ${vm.orderId || vm.awb || ''}`.trim() }
       });
       doc.on('data', (c) => chunks.push(c));
       doc.on('end', () => {
@@ -384,12 +384,12 @@ async function renderLabelPdf(vm) {
         fontSize: layout.courierFont, bold: true, align: 'left', height: 9
       });
       rcy += 10;
-      const shipmozoId = String(vm.shipmozoId || '').trim();
+      const shipmentId = String(vm.shipmozoId || '').trim();
       const awbId = String(vm.awb || '').trim();
       if (s.delivery?.showAwbBarcode) {
         const barH = layout.awbBarH;
-        if (shipmozoId) {
-          fitOneLine(doc, `Shipmozo ID: ${shipmozoId}`, barX, rcy, barW, {
+        if (shipmentId) {
+          fitOneLine(doc, `Shipment ID: ${shipmentId}`, barX, rcy, barW, {
             fontSize: layout.secondaryFont, bold: true, align: 'left', height: 8
           });
           rcy += 9;
@@ -542,9 +542,10 @@ async function renderLabelPdf(vm) {
         doc.lineWidth(0.5).strokeColor('#333333').rect(x0 + 5, bottomY, innerW - 10, layout.notesH).stroke();
         doc.restore();
         txt(doc, s.misc.notes, x0 + 8, bottomY + 3, innerW - 16, {
-          fontSize: layout.secondaryFont,
+          fontSize: Math.max(5.8, layout.secondaryFont - 0.4),
           wrap: true,
-          height: layout.notesH - 6
+          height: Math.max(10, layout.notesH - 5),
+          lineGap: 0.6
         });
       }
       const footY = hasNotes ? bottomY + layout.notesH + 3 : pageBottom - 10;
@@ -714,8 +715,9 @@ async function renderLabelHtml(vm) {
   .inv-lines { width: 100%; text-align: left; margin: 0; }
   .notes {
     flex: 0 0 auto;
-    margin: 0 8px; padding: 4px 6px;
-    border: 1px solid #333; font-size: 7.5px; line-height: 1.15;
+    margin: 0 8px; padding: 5px 6px;
+    border: 1px solid #333; font-size: 7px; line-height: 1.25;
+    white-space: normal; overflow: hidden; word-break: break-word;
   }
   .foot { flex: 0 0 auto; margin-top: 3px; padding: 1px 8px 4px; font-size: 6.5px; }
   .foot-row { display: flex; justify-content: space-between; gap: 8px; }
@@ -735,7 +737,7 @@ async function renderLabelHtml(vm) {
       ${
         s.delivery?.showAwbBarcode
           ? `<div class="awb-block">
-              ${vm.shipmozoId ? `<div class="id-line">${escapeHtml(`Shipmozo ID: ${vm.shipmozoId}`)}</div>` : ''}
+              ${vm.shipmozoId ? `<div class="id-line">${escapeHtml(`Shipment ID: ${vm.shipmozoId}`)}</div>` : ''}
               ${awbBar}
               ${vm.awb ? `<div class="awb-line">${escapeHtml(`AWB: ${vm.awb}`)}</div>` : ''}
             </div>`

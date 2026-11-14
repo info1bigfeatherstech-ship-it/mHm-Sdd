@@ -1,6 +1,7 @@
 /**
- * Build a print view-model for custom Shipmozo 4×6 labels.
- * Shiprocket orders never call this module.
+ * Build a print view-model for custom 4×6 shipping labels.
+ * Works for Shipmozo and Shiprocket orders (order fields are provider-agnostic).
+ * Settings storefront is resolved from order.storefront (ecomm|wholesale|dropship).
  */
 
 const shippingProviderSettingsService = require('./shippingProviderSettings.service');
@@ -276,11 +277,16 @@ function buildLineItems(order, productsCfg) {
  */
 async function buildLabelViewModel(order, settingsPatch) {
   const settings = sanitizeSettings(settingsPatch || defaultSettings());
-  const storefront = String(order?.storefront || '').toLowerCase() === 'wholesale' ? 'wholesale' : 'ecomm';
+  const {
+    resolveLabelSettingsStorefrontForOrder,
+    resolveWarehouseStorefront
+  } = require('./shipmozoLabelSettings.service');
+  const labelStorefront = resolveLabelSettingsStorefrontForOrder(order);
+  const warehouseStorefront = resolveWarehouseStorefront(labelStorefront);
   const addr = order?.addressSnapshot || {};
   const pay = paymentAndCollectable(order);
   const pack = dimsAndWeight(order);
-  const pickup = await resolvePickupWarehouse(storefront, settings.pickup?.sellerName);
+  const pickup = await resolvePickupWarehouse(warehouseStorefront, settings.pickup?.sellerName);
   const { lines, totalQty, hiddenCount } = buildLineItems(order, settings.products);
   const awb = String(order?.shipmentInfo?.awbCode || order?.shipmentInfo?.trackingNumber || '').trim();
   const courier = displayCourierName(order);
@@ -305,7 +311,7 @@ async function buildLabelViewModel(order, settingsPatch) {
 
   return {
     settings,
-    storefront,
+    storefront: labelStorefront,
     labelSize: '4x6',
     courier,
     awb,
@@ -374,7 +380,15 @@ function buildSampleLineItems(settings) {
 
 function buildSampleViewModel(settingsPatch, storefront) {
   const settings = sanitizeSettings(settingsPatch || defaultSettings());
-  const sf = String(storefront || '').toLowerCase() === 'wholesale' ? 'wholesale' : 'ecomm';
+  const raw = String(storefront || '').toLowerCase().trim();
+  const sf =
+    raw === 'dropship' ? 'dropship' : raw === 'wholesale' ? 'wholesale' : 'ecomm';
+  const sampleOrderId =
+    sf === 'dropship'
+      ? 'MHM-DS-865438'
+      : sf === 'wholesale'
+        ? 'OWB-WH-865438'
+        : 'OWB-ECOMM-865438';
   return {
     settings,
     storefront: sf,
@@ -382,7 +396,7 @@ function buildSampleViewModel(settingsPatch, storefront) {
     courier: 'XpressBees 10Kg',
     awb: 'SM1234567890',
     shipmozoId: '86543821',
-    orderId: sf === 'wholesale' ? 'OWB-WH-865438' : 'OWB-ECOMM-865438',
+    orderId: sampleOrderId,
     shipToName: 'John Wick',
     shipToLines: ['221B Baker Street', 'Connaught Place', 'New Delhi, Delhi, 110001', 'India'],
     shipToPhone: '9999999999',

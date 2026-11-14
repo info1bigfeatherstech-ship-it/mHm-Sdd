@@ -1,11 +1,32 @@
 const ShipmozoLabelSettings = require('../models/ShipmozoLabelSettings');
 const logger = require('../utils/logger');
 
-const VALID_STOREFRONTS = new Set(['ecomm', 'wholesale']);
+const VALID_STOREFRONTS = new Set(['ecomm', 'wholesale', 'dropship']);
 
 function normalizeStorefront(value) {
   const s = String(value || 'ecomm').toLowerCase().trim();
+  if (s === 'dropshipper' || s === 'ds') return 'dropship';
   return VALID_STOREFRONTS.has(s) ? s : 'ecomm';
+}
+
+/**
+ * Label settings key for an order. Dropship stays isolated from ecomm/wholesale.
+ * @param {object|null|undefined} order
+ * @returns {'ecomm'|'wholesale'|'dropship'}
+ */
+function resolveLabelSettingsStorefrontForOrder(order) {
+  const sf = String(order?.storefront || '').toLowerCase().trim();
+  if (sf === 'dropship') return 'dropship';
+  if (sf === 'wholesale') return 'wholesale';
+  return 'ecomm';
+}
+
+/**
+ * Warehouse / shipping-provider settings storefront (dropship inherits ecomm partner config).
+ * @param {'ecomm'|'wholesale'|'dropship'|string} labelStorefront
+ */
+function resolveWarehouseStorefront(labelStorefront) {
+  return String(labelStorefront || '').toLowerCase() === 'wholesale' ? 'wholesale' : 'ecomm';
 }
 
 function asBool(v, fallback) {
@@ -138,11 +159,72 @@ function mergeBranding(defaults, incoming, preserveAssets) {
 }
 
 /**
+ * Normalize FE/admin aliases into canonical settings keys before sanitize.
+ * Accepts nested `{ settings }` wrappers and legacy field names.
+ */
+function normalizeIncomingSettingsPatch(incoming) {
+  let src = incoming && typeof incoming === 'object' ? { ...incoming } : {};
+  if (src.settings && typeof src.settings === 'object') {
+    src = { ...src.settings, ...src };
+    delete src.settings;
+  }
+
+  const products = src.products && typeof src.products === 'object' ? { ...src.products } : src.products;
+  if (products && products.maxLineItems == null && products.maxItems != null) {
+    products.maxLineItems = products.maxItems;
+  }
+
+  let misc = src.misc && typeof src.misc === 'object' ? { ...src.misc } : null;
+  const miscellaneous =
+    src.miscellaneous && typeof src.miscellaneous === 'object' ? src.miscellaneous : null;
+  if (!misc && miscellaneous) {
+    misc = {
+      ...miscellaneous,
+      showEwayBill:
+        miscellaneous.showEwayBill != null
+          ? miscellaneous.showEwayBill
+          : miscellaneous.showEwayBillNo,
+      showPoweredBy:
+        miscellaneous.showPoweredBy != null
+          ? miscellaneous.showPoweredBy
+          : miscellaneous.showPoweredByStore
+    };
+  } else if (misc && miscellaneous) {
+    if (misc.showEwayBill == null && miscellaneous.showEwayBillNo != null) {
+      misc.showEwayBill = miscellaneous.showEwayBillNo;
+    }
+    if (misc.showPoweredBy == null && miscellaneous.showPoweredByStore != null) {
+      misc.showPoweredBy = miscellaneous.showPoweredByStore;
+    }
+  }
+
+  let branding = src.branding && typeof src.branding === 'object' ? { ...src.branding } : null;
+  const logo = src.logo && typeof src.logo === 'object' ? src.logo : null;
+  if (!branding && logo) {
+    branding = {
+      showLogo: logo.enabled,
+      logoUrl: logo.url,
+      logoPublicId: logo.publicId || logo.logoPublicId || ''
+    };
+  } else if (branding && logo) {
+    if (branding.showLogo == null && logo.enabled != null) branding.showLogo = logo.enabled;
+    if (!branding.logoUrl && logo.url) branding.logoUrl = logo.url;
+  }
+
+  return {
+    ...src,
+    products,
+    misc: misc || src.misc,
+    branding: branding || src.branding
+  };
+}
+
+/**
  * Sanitize a partial/full settings payload. Unknown keys dropped. Weight/dims stay on.
  */
 function sanitizeSettings(incoming) {
   const d = defaultSettings();
-  const src = incoming && typeof incoming === 'object' ? incoming : {};
+  const src = normalizeIncomingSettingsPatch(incoming);
   try {
     return {
       labelSize: '4x6',
@@ -263,8 +345,12 @@ async function saveSettings(storefront, patch, updatedBy) {
 }
 
 module.exports = {
+  VALID_STOREFRONTS,
   normalizeStorefront,
+  resolveLabelSettingsStorefrontForOrder,
+  resolveWarehouseStorefront,
   defaultSettings,
+  normalizeIncomingSettingsPatch,
   sanitizeSettings,
   getPublicSettings,
   saveSettings,

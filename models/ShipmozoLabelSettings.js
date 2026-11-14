@@ -1,15 +1,16 @@
 const mongoose = require('mongoose');
 
 /**
- * Per-storefront Shipmozo shipping-label layout.
- * Ecomm admin writes storefront=ecomm; wholesale admin writes storefront=wholesale.
- * Applied only when generating custom labels for Shipmozo orders (never Shiprocket).
+ * Per-channel custom shipping-label layout (4×6).
+ * - ecomm / wholesale: standard channel configs (unchanged)
+ * - dropship: independent Dropshipper label config (never mixed with ecomm)
+ * Used when admin/dropshipper chooses Custom label for Shipmozo OR Shiprocket orders.
  */
 const shipmozoLabelSettingsSchema = new mongoose.Schema(
   {
     storefront: {
       type: String,
-      enum: ['ecomm', 'wholesale'],
+      enum: ['ecomm', 'wholesale', 'dropship'],
       required: true,
       unique: true,
       index: true

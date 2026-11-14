@@ -477,6 +477,34 @@ exports.getOrderDetail = async (req, res) => {
 
     const { order: detail, fulfillmentPaymentGate } = await buildAdminOrderDetailPayload(order);
 
+    // Dropship channel only: attach partner card (never mixed into ecomm User).
+    if (String(detail?.storefront || '').toLowerCase() === 'dropship') {
+      try {
+        const Dropshipper = require('../dropshipper/models/Dropshipper');
+        const dsRaw = detail.dropshipMeta?.dropshipperId || detail.userId;
+        const dsId = String(dsRaw?._id || dsRaw?.id || dsRaw || '').trim();
+        if (dsId && require('mongoose').isValidObjectId(dsId)) {
+          const ds = await Dropshipper.findById(dsId)
+            .select('fullName email phone businessName whatsappNumber status')
+            .lean();
+          if (ds) {
+            detail.dropshipper = {
+              id: String(ds._id),
+              _id: String(ds._id),
+              fullName: ds.fullName || null,
+              businessName: ds.businessName || null,
+              email: ds.email || null,
+              phone: ds.phone || null,
+              whatsappNumber: ds.whatsappNumber || null,
+              status: ds.status || null
+            };
+          }
+        }
+      } catch (attachErr) {
+        logger.warn('getOrderDetail dropshipper attach failed', { message: attachErr?.message });
+      }
+    }
+
     return res.json({
       success: true,
       data: {
